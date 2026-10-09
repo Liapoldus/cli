@@ -105,12 +105,24 @@ func loadTargets(path string) ([]Target, error) {
 	if err := json.Unmarshal(body, &file); err != nil {
 		return nil, fmt.Errorf("invalid target registry: %w", err)
 	}
+	base := filepath.Dir(path)
 	for index := range file.Targets {
 		if file.Targets[index].Name == "" {
 			return nil, errors.New("target name is required")
 		}
+		file.Targets[index].CoreBinary = resolveTargetPath(base, file.Targets[index].CoreBinary)
+		file.Targets[index].StatePath = resolveTargetPath(base, file.Targets[index].StatePath)
+		file.Targets[index].PIDPath = resolveTargetPath(base, file.Targets[index].PIDPath)
+		file.Targets[index].LogPath = resolveTargetPath(base, file.Targets[index].LogPath)
 	}
 	return file.Targets, nil
+}
+
+func resolveTargetPath(base, value string) string {
+	if value == "" || filepath.IsAbs(value) {
+		return value
+	}
+	return filepath.Clean(filepath.Join(base, value))
 }
 
 func findTarget(targets []Target, name string) (Target, error) {
