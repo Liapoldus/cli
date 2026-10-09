@@ -50,9 +50,10 @@ liapoldus core database restore --target local --input ./backup.sqlite
 Target profile не должен содержать private key или secret value. Credentials
 выбираются по reference из OS credential store, agent или CI secret provider.
 
-При `core start` CLI передаёт Core `CORE_SQLITE_PATH` и одноразовые `CORE_INIT_*`
-из secure target profile. Core сам выполняет bootstrap до открытия Management
-API. CLI не пишет SQLite напрямую.
+При `core start` local target adapter передаёт Core `CORE_SQLITE_PATH` и
+одноразовые secure bootstrap references; Core сам создаёт initial settings
+revision. Для remote target CLI не получает доступ к SQLite и использует
+API/execution adapter.
 
 ## Bundle и диагностика
 

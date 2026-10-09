@@ -53,10 +53,11 @@ Core владеет runtime control plane и SQLite:
 Core не содержит пользовательского CLI, Git client, Git credentials, project
 resolver или deployment-provider integration.
 
-При первом запуске Core сам создаёт и инициализирует SQLite из `CORE_INIT_*`.
-Это одноразовый bootstrap процесса, а не команда Core. CLI передаёт bootstrap
-environment при запуске локального Core, но не открывает SQLite и не вызывает
-внутренние Core packages.
+При первом запуске local target adapter CLI передаёт Core `CORE_SQLITE_PATH` и
+secure bootstrap references; Core создаёт initial settings state до открытия
+API. CLI не импортирует внутренние Core packages и не открывает SQLite; remote
+targets работают только через Management API или явно установленный execution
+adapter.
 
 ## 2. Источники истины
 

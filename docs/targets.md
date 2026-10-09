@@ -51,9 +51,10 @@ Local target может включать:
 - local certificates/credentials через secure store;
 - port and health endpoint.
 
-Первый запуск local Core выполняет одноразовый bootstrap SQLite из
-`CORE_INIT_*`. Эти значения приходят из secure target provider и не попадают в
-project files, Git, bundle или logs.
+Первый запуск local Core выполняется через `liapoldus core start`: target
+adapter передаёт Core `CORE_SQLITE_PATH` и secure bootstrap references, а Core
+создаёт initial settings state. Секретные значения не попадают в project files,
+Git, bundle или logs.
 
 `core start`, `core stop`, `core restart`, `core status` и `core logs` действуют
 через target adapter. `core database backup/restore` использует поддержанный

@@ -84,7 +84,8 @@ product-specific fields.
 
 После транзакции Core сам управляет `staging → active`, `previous`, generation,
 operation journal и replica acknowledgements. CLI не открывает Core SQLite и не
-пишет в неё напрямую.
+пишет desired state напрямую; local lifecycle/backup/restore доступны только
+отдельному target execution adapter.
 
 ## 5. Determinism
 

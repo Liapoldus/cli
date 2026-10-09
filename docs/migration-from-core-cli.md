@@ -36,17 +36,13 @@
 - project/Git/deploy code;
 - старые docs routes под `/core/cli/`.
 
-## Порядок одной breaking migration
+## Состояние breaking migration
 
-1. Утвердить Core Management API bundle/apply contract.
-2. Реализовать CLI transport client и contract tests against Core.
-3. Перенести lifecycle adapters и локальные smoke workflows.
-4. Перенести operator docs и CI workflows на `liapoldus`.
-5. В одном изменении Core удалить CLI entrypoint, CLI adapters, assets, tests и
-   документацию.
-6. Обновить агрегатор docs и все ссылки на новый CLI.
-7. Прогнать cross-repository acceptance: local, remote, multi-target, rejected
-   approval, failed rollout и degraded rollout.
+Core-side CLI entrypoints, bootstrap dispatcher, direct SQLite migration command
+и CLI asset удалены. В этом репозитории уже находится standalone revision/bundle
+boundary: `project inspect`, `validate`, `bundle build`, `plan` и guarded `apply`.
+Следующий executable slice — target registry, local process adapter и
+Management API transport; эти функции не возвращаются в Core.
 
 Нельзя считать миграцию завершённой, если старые Core CLI routes, команды или
 параллельные lifecycle semantics остаются описанными как поддерживаемые.
