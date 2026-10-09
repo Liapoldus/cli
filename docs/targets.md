@@ -18,8 +18,31 @@ targets:
     approval: remote-required
 ```
 
-Такой YAML — концептуальная модель. Секреты, private keys и access tokens в
-project source не хранятся.
+В текущем CLI target registry хранится как JSON в пути
+`LIAPOLDUS_TARGETS_FILE` (по умолчанию OS config directory
+`liapoldus/targets.json`). Секреты, private keys и access tokens в registry не
+хранятся; `core status` использует health endpoint, а token применяется только
+при bundle operations.
+
+Пример local target:
+
+```json
+{
+  "targets": [{
+    "name": "local",
+    "environment": "local",
+    "transport": "local-process",
+    "endpoint": "http://127.0.0.1:8080",
+    "coreBinary": "/usr/local/bin/core",
+    "statePath": ".studio/local/core.sqlite",
+    "pidPath": ".studio/local/core.pid",
+    "logPath": ".studio/local/core.log"
+  }]
+}
+```
+
+`liapoldus core start/stop/status/logs` работают только с объявленным
+`local-process`; remote API target не получает процессный доступ.
 
 ## 2. Multiple Core workflow
 

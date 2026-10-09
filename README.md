@@ -17,9 +17,10 @@ Management API, но не содержит собственного пользо
 - возвращает наблюдаемые operation, generation, replica и readiness results;
 - работает в GitHub Actions и других CI без зависимости от Studio.
 
-Текущий executable slice уже фиксирует обязательную границу revision: `plan`,
-`bundle build` и `apply` разрешают только Git commit, а `apply` дополнительно
-требует чистое дерево и явный `--confirm`. Bundle собирается детерминированно из
+Executable v2 фиксирует обязательную границу revision: `plan`, `bundle build` и
+`apply` разрешают только Git commit, а `apply` дополнительно требует чистое
+дерево и явный `--confirm`. `plan` и `apply` отправляют bundle через Core
+Management API; Core сам владеет SQLite. Bundle собирается детерминированно из
 отсортированного project tree и не включает secrets/`.studio` state.
 
 ## Что CLI не делает

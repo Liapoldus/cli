@@ -1,18 +1,19 @@
 # Целевая command surface
 
-Команды ниже описывают ownership и UX. Имена и flags должны стать code-owned
-контрактом после появления первой реализации.
+Команды ниже описывают code-owned поверхность текущего v2 CLI. Неизвестные
+команды и отсутствие обязательных flags завершаются ненулевым кодом.
 
 ## Project и validation
 
 ```bash
 liapoldus project inspect --project ./project
 liapoldus validate --project ./project --revision <commit> --environment production
-liapoldus plan --project ./project --revision <commit> --target production
+liapoldus plan --project ./project --revision <commit> --target production \
+  --endpoint https://core.example --token "$CORE_TOKEN"
 ```
 
-`validate` не требует Core. `plan` может использовать только read-only Core API
-для сравнения target state, но не меняет Core.
+`validate` не требует Core. `plan` использует только read-only Core API и не
+меняет Core.
 
 ## Apply и observations
 
@@ -21,6 +22,8 @@ liapoldus apply \
   --project ./project \
   --revision <commit> \
   --target production \
+  --endpoint https://core.example \
+  --token "$CORE_TOKEN" \
   --wait
 
 liapoldus operation get <operation-id> --target production
@@ -28,8 +31,8 @@ liapoldus operation watch <operation-id> --target production
 liapoldus status --target production
 ```
 
-`apply` требует resolved immutable commit, approval policy, target capability,
-валидный bundle и idempotency key. При отказе Core или degraded rollout CLI
+`apply` требует resolved immutable commit, чистое рабочее дерево, `--confirm`,
+target endpoint/token и валидный bundle. При отказе Core или degraded rollout CLI
 возвращает ненулевой exit code и сохраняет machine-readable report.
 
 ## Targets и connections
@@ -61,7 +64,6 @@ API/execution adapter.
 liapoldus bundle build --project ./project --revision <commit> --target production
 liapoldus bundle inspect <bundle-file>
 liapoldus doctor --project ./project --target production
-liapoldus core migrate --target local --input ./legacy/core.yaml --dry-run
 ```
 
 Bundle file предназначен для диагностики и CI handoff. Он не является вторым

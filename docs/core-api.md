@@ -19,7 +19,7 @@ DTO между репозиториями запрещены.
 
 ## 2. Apply request
 
-Концептуальный request содержит:
+Текущий request содержит:
 
 ```yaml
 project:
@@ -29,7 +29,9 @@ project:
 bundle:
   schemaVersion: core-config/v2
   digest: sha256:...
-  services: []
+  services:
+    - id: forms
+      settings: { opaque: true }
   links: []
 target:
   environment: production
@@ -39,12 +41,12 @@ request:
   actor: ci/github-actions
 ```
 
-Это illustrative shape, а не финальный wire schema. Product-specific service
-settings остаются opaque для Core с service-owned schema validation.
+Это versioned wire shape. Product-specific service settings остаются opaque для
+generic Core envelope; schema validation принадлежит service contract.
 
 ## 3. Plan before apply
 
-CLI должен уметь:
+CLI умеет:
 
 1. получить capabilities Core;
 2. отправить bundle в read-only validation/plan endpoint;

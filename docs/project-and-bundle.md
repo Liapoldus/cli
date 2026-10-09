@@ -11,7 +11,7 @@ project/
 ├── services/
 │   └── <service-id>/
 │       ├── service.yaml         # binding и schema reference
-│       ├── settings/            # declarative settings source
+│       ├── settings.json        # один opaque declarative JSON document
 │       └── links/               # Core-owned link declarations
 ├── modules/                     # project files для Studio plugins
 ├── schemas/                     # references или project-owned schemas
@@ -21,8 +21,9 @@ project/
 └── .studio/                     # local generated state, не source
 ```
 
-Точная схема файлов принадлежит отдельному project contract. CLI не должен
-создавать параллельный формат только для CI.
+Для Core delivery v2 service settings materialized в
+`services/<service-id>/settings.json`. CLI не создаёт параллельный формат только
+для CI; Studio редактирует этот же файл schema-driven формой.
 
 ## 2. Revision requirement
 
@@ -54,7 +55,7 @@ sequenceDiagram
     CLI->>Project: load manifest + environment
     Project-->>CLI: source documents and references
     CLI->>CLI: validate, resolve, normalize, hash
-    CLI->>Core: apply(bundle, SHA, schema, idempotency key)
+CLI->>Core: POST /api/config-bundles/apply
     Core->>Core: validate generic envelope and service schemas
     Core->>SQLite: one transaction: staging + desired metadata
     SQLite-->>Core: committed generation
@@ -77,8 +78,8 @@ sequenceDiagram
 - safe provenance metadata;
 - references на secrets, но не значения secrets.
 
-Core принимает bundle и в одной транзакции записывает desired configuration и
-provenance metadata. Для каждой service configuration сохраняются raw JSON bytes
+Core принимает bundle через API и сохраняет desired configuration и provenance
+metadata собственными SQLite invariants. Для каждой service configuration сохраняются raw JSON bytes
 в соответствии с Core storage invariants; Core не переписывает
 product-specific fields.
 

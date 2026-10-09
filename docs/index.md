@@ -2,10 +2,8 @@
 
 ## Статус документа
 
-Это целевая спецификация отдельного универсального CLI. Репозиторий создан как
-владелец CLI-кода, его command contract и deployment workflow. До реализации
-команды и форматы ниже являются согласованным product/architecture target, а не
-готовым публичным API.
+Это нормативная спецификация отдельного универсального CLI. Репозиторий владеет
+CLI-кодом, command contract и deployment workflow; Core не содержит его копии.
 
 ## Главная идея
 
@@ -24,7 +22,7 @@ Studio Project files + Git commit
        Core Management API
              │
              ▼
-      Core SQLite transaction
+      Core-owned SQLite writes
              │
              ▼
        replicas / operations
