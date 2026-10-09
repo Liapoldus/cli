@@ -51,8 +51,13 @@ Local target может включать:
 - local certificates/credentials через secure store;
 - port and health endpoint.
 
+Первый запуск local Core выполняет одноразовый bootstrap SQLite из
+`CORE_INIT_*`. Эти значения приходят из secure target provider и не попадают в
+project files, Git, bundle или logs.
+
 `core start`, `core stop`, `core restart`, `core status` и `core logs` действуют
-только через target adapter. CLI не изменяет SQLite напрямую и не использует
+через target adapter. `core database backup/restore` использует поддержанный
+Core API или execution adapter. CLI не изменяет SQLite напрямую и не использует
 непубличные Core packages.
 
 ## 4. Remote Core

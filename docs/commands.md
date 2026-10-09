@@ -43,10 +43,16 @@ liapoldus core status --target local
 liapoldus core start --target local
 liapoldus core stop --target local
 liapoldus core logs --target local
+liapoldus core database backup --target production --output ./backup.sqlite
+liapoldus core database restore --target local --input ./backup.sqlite
 ```
 
 Target profile не должен содержать private key или secret value. Credentials
 выбираются по reference из OS credential store, agent или CI secret provider.
+
+При `core start` CLI передаёт Core `CORE_SQLITE_PATH` и одноразовые `CORE_INIT_*`
+из secure target profile. Core сам выполняет bootstrap до открытия Management
+API. CLI не пишет SQLite напрямую.
 
 ## Bundle и диагностика
 
@@ -54,6 +60,7 @@ Target profile не должен содержать private key или secret va
 liapoldus bundle build --project ./project --revision <commit> --target production
 liapoldus bundle inspect <bundle-file>
 liapoldus doctor --project ./project --target production
+liapoldus core migrate --target local --input ./legacy/core.yaml --dry-run
 ```
 
 Bundle file предназначен для диагностики и CI handoff. Он не является вторым

@@ -25,6 +25,14 @@
 - operation watch;
 - typed errors и exit codes.
 
+### Slice 3a — Core v2 bootstrap boundary
+
+- Core auto-initializes SQLite from `CORE_INIT_*` exactly once;
+- CLI supplies bootstrap environment only when starting a local Core;
+- legacy `core-migrate` orchestration moves behind the CLI target adapter;
+- no Core CLI entrypoint, SQLite writer or internal-package import remains;
+- startup and first-admin bootstrap are covered by cross-repository tests.
+
 ### Slice 4 — targets и local lifecycle
 
 - target profiles;
