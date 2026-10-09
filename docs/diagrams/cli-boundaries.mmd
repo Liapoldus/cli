@@ -1,0 +1,13 @@
+flowchart TB
+    Studio["Studio\nproject + Git UI"]
+    Git["Git remote\nsource of truth"]
+    CLI["liapoldus CLI\nresolve / validate / plan / apply"]
+    API["Core Management API"]
+    SQLite["Core SQLite\napplied desired state"]
+    Runtime["Core runtime\nreplicas + operations"]
+    Studio --> Git
+    Git --> CLI
+    Studio -. "no Core access" .-> API
+    CLI --> API
+    API --> SQLite
+    API --> Runtime

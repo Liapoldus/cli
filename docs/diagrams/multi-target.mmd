@@ -1,0 +1,8 @@
+flowchart LR
+    Commit["One approved Git commit"] --> CLI["liapoldus CLI"]
+    CLI --> Local["local Core"]
+    CLI --> Stage["staging Core"]
+    CLI --> Prod["production Core"]
+    Local --> LDB[("SQLite local")]
+    Stage --> SDB[("SQLite staging")]
+    Prod --> PDB[("SQLite production")]

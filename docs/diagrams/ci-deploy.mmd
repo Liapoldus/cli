@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant GitHub
+    participant CLI
+    participant Core
+    participant SQLite
+    GitHub->>CLI: checkout exact commit
+    CLI->>CLI: validate + plan + approval evidence
+    CLI->>Core: apply bundle + SHA + digest
+    Core->>SQLite: atomic desired-state transaction
+    SQLite-->>Core: generation
+    Core-->>CLI: operation ID
+    CLI->>Core: observe rollout
+    Core-->>GitHub: succeeded / failed / degraded

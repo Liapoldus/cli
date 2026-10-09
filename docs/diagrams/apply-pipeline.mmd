@@ -1,0 +1,10 @@
+flowchart LR
+    A["Immutable commit"] --> B["Resolve project"]
+    B --> C["Validate schema"]
+    C --> D["Normalize bundle"]
+    D --> E["Compute digest"]
+    E --> F["Plan + approval"]
+    F --> G["Core API apply"]
+    G --> H["SQLite transaction"]
+    H --> I["Operation / generation"]
+    I --> J["Replica ACKs"]
