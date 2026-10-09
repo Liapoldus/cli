@@ -85,9 +85,92 @@ func coreCommand(args []string, stdout, stderr io.Writer) int {
 		return statusCore(item, stdout, stderr)
 	case "logs":
 		return logsCore(item, stdout, stderr)
+	case "database":
+		if len(args) < 2 {
+			return fail(stderr, ExitArguments, "database action is required")
+		}
+		if item.Transport != "local-process" {
+			return fail(stderr, ExitTarget, "database execution requires local-process target")
+		}
+		running, _ := processRunning(item.PIDPath)
+		if running {
+			return fail(stderr, ExitTarget, "stop Core before database backup or restore")
+		}
+		switch args[1] {
+		case "backup":
+			output, err := flagValue(args[2:], "--output")
+			if err != nil {
+				return fail(stderr, ExitArguments, err.Error())
+			}
+			return backupDatabase(item, output, stdout, stderr)
+		case "restore":
+			input, err := flagValue(args[2:], "--input")
+			if err != nil {
+				return fail(stderr, ExitArguments, err.Error())
+			}
+			return restoreDatabase(item, input, stdout, stderr)
+		default:
+			return fail(stderr, ExitArguments, "unsupported database action")
+		}
 	default:
 		return fail(stderr, ExitArguments, "unsupported core subcommand")
 	}
+}
+
+func backupDatabase(target Target, output string, stdout, stderr io.Writer) int {
+	if target.StatePath == "" {
+		return fail(stderr, ExitTarget, "target does not declare statePath")
+	}
+	if _, err := os.Stat(output); err == nil {
+		return fail(stderr, ExitTarget, "backup output already exists")
+	}
+	if err := copyFile(target.StatePath, output, false); err != nil {
+		return fail(stderr, ExitTarget, err.Error())
+	}
+	return encode(stdout, map[string]any{"target": target.Name, "backup": output})
+}
+
+func restoreDatabase(target Target, input string, stdout, stderr io.Writer) int {
+	if target.StatePath == "" {
+		return fail(stderr, ExitTarget, "target does not declare statePath")
+	}
+	if _, err := os.Stat(input); err != nil {
+		return fail(stderr, ExitTarget, err.Error())
+	}
+	temporary := target.StatePath + ".restore.tmp"
+	if err := copyFile(input, temporary, true); err != nil {
+		return fail(stderr, ExitTarget, err.Error())
+	}
+	if err := os.Rename(temporary, target.StatePath); err != nil {
+		_ = os.Remove(temporary)
+		return fail(stderr, ExitTarget, err.Error())
+	}
+	return encode(stdout, map[string]any{"target": target.Name, "restored": target.StatePath})
+}
+
+func copyFile(source, destination string, overwrite bool) error {
+	if !overwrite {
+		if _, err := os.Stat(destination); err == nil {
+			return errors.New("destination already exists")
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func loadTargets(path string) ([]Target, error) {
