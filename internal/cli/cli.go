@@ -46,7 +46,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "project":
-		if len(args) == 2 && args[1] == "inspect" {
+		if len(args) >= 2 && args[1] == "inspect" {
 			return inspectProject(args[2:], stdout, stderr)
 		}
 	case "validate":
