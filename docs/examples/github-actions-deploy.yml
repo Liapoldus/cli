@@ -1,0 +1,47 @@
+name: Deploy Core configuration
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        required: true
+        description: Exact approved Git commit to deploy
+      cli_version:
+        required: true
+        default: v0.1.0
+        description: Pinned Liapoldus CLI release
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.revision }}
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.x'
+      - name: Install pinned CLI
+        run: go install github.com/Liapoldus/cli/cmd/liapoldus@${{ inputs.cli_version }}
+      - name: Validate
+        run: liapoldus validate --project . --revision '${{ inputs.revision }}'
+      - name: Plan
+        run: >-
+          liapoldus plan --project . --revision '${{ inputs.revision }}'
+          --target production --targets .liapoldus/targets.json
+          # target profile resolves tokenEnv: CORE_TOKEN through the provider
+        env:
+          CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+      - name: Apply
+        run: >-
+          liapoldus apply --project . --revision '${{ inputs.revision }}'
+          --target production --targets .liapoldus/targets.json
+          --approval-evidence approval.json
+          --confirm --wait
+        env:
+          CORE_TOKEN: ${{ secrets.CORE_TOKEN }}

@@ -40,6 +40,26 @@ CLI владеет операционным workflow вокруг Core:
 CLI не является вторым редактором проекта. Он не изменяет source files и не
 выполняет Git commit за пользователя.
 
+В коде CLI границы выражены четырьмя слоями:
+
+```text
+internal/domain          модели bundle/target и порты
+internal/application     build, plan, apply и policy use cases
+internal/infrastructure  Git, Core API, target registry, credentials и local Core adapter
+internal/presentation    command parsing, exit codes и stdout/stderr
+cmd/liapoldus             composition root
+```
+
+Presentation не вызывает Git, HTTP или process APIs напрямую. Application
+зависит только от domain ports. Infrastructure не содержит deployment policy;
+она предоставляет адаптеры, которые собираются в `cmd/liapoldus`.
+
+Credential references разрешаются отдельным `CredentialProvider`. Текущий
+composition root подключает environment provider для CI/secret variables;
+desktop keychain или другой secret manager может быть подключён тем же портом,
+не меняя application policy. Значения credentials не попадают в target JSON,
+bundle, logs или reports.
+
 ### Core
 
 Core владеет runtime control plane и SQLite:

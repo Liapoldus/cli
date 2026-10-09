@@ -37,9 +37,14 @@ Studio Project files + Git commit
 | [Команды](commands) | целевая command surface |
 | [Core API contract](core-api) | transport, idempotency, CAS и operation model |
 | [Targets и несколько Core](targets) | local, remote, target profiles и lifecycle |
-| [GitHub CI и approval](ci-and-approval) | commit-gated deploy и remote governance |
+| [GitHub CI и approval](ci-and-approval) | commit-gated deploy и remote governance; workflow example находится в `docs/examples/github-actions-deploy.yml` |
 | [Миграция Core CLI](migration-from-core-cli) | одномоментное удаление CLI из Core |
+| [Релиз и откат](release) | GoReleaser artifacts, checksums, установка и rollback |
 | [Roadmap](roadmap) | vertical slices, acceptance criteria и открытые решения |
+
+Релизы публикуются по Git tag `vX.Y.Z`; GitHub Actions собирает платформенные
+архивы и `checksums.txt` через GoReleaser. До создания первого
+release tag должны пройти CI quality и cross-build gates.
 
 ## Нормативные инварианты
 

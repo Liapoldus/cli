@@ -7,14 +7,15 @@ Core endpoint, transport capabilities, API compatibility и credential refs.
 
 ```yaml
 targets:
-  local:
+  - name: local
     environment: local
     transport: local-process
-    coreEndpoint: http://127.0.0.1:...
-  production:
+    endpoint: https://127.0.0.1:8080
+  - name: production
     environment: production
-    transport: api
-    coreEndpoint: https://core.example
+    transport: remote-api
+    endpoint: https://core.example
+    tokenEnv: CORE_TOKEN
     approval: remote-required
 ```
 
@@ -32,11 +33,25 @@ targets:
     "name": "local",
     "environment": "local",
     "transport": "local-process",
-    "endpoint": "http://127.0.0.1:8080",
+    "endpoint": "https://127.0.0.1:8080",
+    "caFile": ".studio/tls/ca.pem",
+    "clientCertFile": ".studio/tls/cli.crt",
+    "clientKeyFile": ".studio/tls/cli.key",
+    "serverName": "localhost",
     "coreBinary": "/usr/local/bin/core",
     "statePath": ".studio/local/core.sqlite",
     "pidPath": ".studio/local/core.pid",
-    "logPath": ".studio/local/core.log"
+    "logPath": ".studio/local/core.log",
+    "bootstrap": {
+      "managementCertificate": ".studio/tls/management.crt",
+      "managementKey": ".studio/tls/management.key",
+      "managementClientCA": ".studio/tls/ca.pem",
+      "controlCertificate": ".studio/tls/control.crt",
+      "controlKey": ".studio/tls/control.key",
+      "replicaClientCA": ".studio/tls/replica-client-ca.pem",
+      "replicaServerCA": ".studio/tls/replica-server-ca.pem",
+      "secretRoot": ".studio/secrets"
+    }
   }]
 }
 ```
@@ -79,6 +94,12 @@ adapter передаёт Core `CORE_SQLITE_PATH` и secure bootstrap references,
 создаёт initial settings state. Секретные значения не попадают в project files,
 Git, bundle или logs.
 
+Для нового локального Core target обязан указать абсолютные после разрешения
+registry пути к management/control certificate и key, replica client/server CA и
+`secretRoot`. Относительные пути из profile разрешаются относительно файла
+registry. Эти значения становятся только `CORE_INIT_*` environment references;
+после bootstrap Core хранит settings в своей SQLite и читает их сам.
+
 `core start`, `core stop`, `core restart`, `core status` и `core logs` действуют
 через target adapter. `core database backup/restore` использует поддержанный
 Core API или execution adapter. CLI не изменяет SQLite напрямую и не использует
@@ -90,9 +111,19 @@ Remote target может поддерживать только API operations л
 operations через `ssh`, managed agent или другой зарегистрированный provider.
 Эти возможности объявляются capability discovery и явно показываются в plan.
 
+Для удалённого HTTPS Core target registry может содержать `caFile`,
+`clientCertFile`, `clientKeyFile` и `serverName`. Пути разрешаются относительно
+registry-файла; private key и certificate contents не попадают в registry или
+bundle. CLI использует TLS 1.2 или новее и проверяет client certificate/key как
+пару.
+
 Удалённый API-only target разрешает `status`, `plan`, `apply` и observation, но
 не обещает `start`/`stop`. Это предотвращает ложное ощущение, что Management API
 владеет удалённым process supervisor.
+
+`approval: remote-required` включает обязательную проверку approval evidence в
+`apply`. Evidence должна ссылаться на тот же Git repository, exact commit и
+target; локальный `--confirm` не является обходом этого правила.
 
 ## 5. Target isolation
 

@@ -1,0 +1,61 @@
+package targets
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Liapoldus/cli/internal/domain"
+)
+
+func TestRegistryAddAndResolveRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config", "targets.json")
+	registry := Registry{Path: path}
+	target := domain.Target{Name: "local", Environment: "local", Transport: domain.TransportLocalProcess, StatePath: "state/core.sqlite", CAFile: "tls/ca.pem"}
+	if err := registry.Add(target); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := registry.Find("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(filepath.Dir(path), "state", "core.sqlite")
+	if resolved.StatePath != expected {
+		t.Fatalf("state path=%q expected=%q", resolved.StatePath, expected)
+	}
+	if resolved.CAFile != filepath.Join(filepath.Dir(path), "tls", "ca.pem") {
+		t.Fatalf("CA path=%q", resolved.CAFile)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Add(target); err == nil {
+		t.Fatal("expected duplicate target error")
+	}
+}
+
+func TestRegistryRejectsRemoteTargetWithoutEndpoint(t *testing.T) {
+	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
+	err := registry.Add(domain.Target{Name: "production", Transport: domain.TransportRemoteAPI})
+	if err == nil || !strings.Contains(err.Error(), "requires an endpoint") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRegistryRejectsInvalidEndpoint(t *testing.T) {
+	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
+	err := registry.Add(domain.Target{Name: "production", Transport: domain.TransportRemoteAPI, Endpoint: "core.example"})
+	if err == nil || !strings.Contains(err.Error(), "invalid HTTP(S) endpoint") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRegistryRejectsHTTPSWithoutClientCertificate(t *testing.T) {
+	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
+	err := registry.Add(domain.Target{Name: "production", Transport: domain.TransportRemoteAPI, Endpoint: "https://core.example"})
+	if err == nil || !strings.Contains(err.Error(), "requires client certificate and key") {
+		t.Fatalf("error=%v", err)
+	}
+}

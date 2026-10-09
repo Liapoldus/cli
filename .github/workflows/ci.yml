@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make check
+      - run: make test-race
+      - run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
+
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build -trimpath -ldflags "-s -w -X github.com/Liapoldus/cli/internal/presentation/cli.Version=ci" ./cmd/liapoldus
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+
+  core-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Liapoldus/core
+          ref: ff94e199d610dd206cd21b6ab56b5084bcc2d1d0
+          path: core
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./internal/infrastructure/coreapi
+        env:
+          LIAPOLDUS_CORE_OPENAPI: ${{ github.workspace }}/core/contracts/v1/management.openapi.yaml
+
+  release-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check --config .goreleaser.yaml
+
+  core-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Liapoldus/core
+          ref: ff94e199d610dd206cd21b6ab56b5084bcc2d1d0
+          path: core
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: core/go.mod
+          cache: true
+      - name: Build Core
+        run: go build -trimpath -o "$RUNNER_TEMP/core" ./cmd/core
+        working-directory: core
+      - name: Build CLI from the checked out repository
+        run: go build -trimpath -o "$RUNNER_TEMP/liapoldus" ./cmd/liapoldus
+      - name: Generate ephemeral mTLS material
+        run: |
+          mkdir -p "$RUNNER_TEMP/liapoldus-smoke/tls" "$RUNNER_TEMP/liapoldus-smoke/secrets"
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$RUNNER_TEMP/liapoldus-smoke/tls/ca.key" \
+            -out "$RUNNER_TEMP/liapoldus-smoke/tls/ca.pem" \
+            -subj "/CN=Liapoldus CI Smoke CA" -days 1
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout "$RUNNER_TEMP/liapoldus-smoke/tls/core.key" \
+            -out "$RUNNER_TEMP/liapoldus-smoke/tls/core.csr" \
+            -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+          openssl x509 -req -in "$RUNNER_TEMP/liapoldus-smoke/tls/core.csr" \
+            -CA "$RUNNER_TEMP/liapoldus-smoke/tls/ca.pem" \
+            -CAkey "$RUNNER_TEMP/liapoldus-smoke/tls/ca.key" -CAcreateserial \
+            -out "$RUNNER_TEMP/liapoldus-smoke/tls/core.crt" -days 1 -sha256 \
+            -copy_extensions copy
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout "$RUNNER_TEMP/liapoldus-smoke/tls/client.key" \
+            -out "$RUNNER_TEMP/liapoldus-smoke/tls/client.csr" \
+            -subj "/CN=liapoldus-ci" -addext "extendedKeyUsage=clientAuth"
+          openssl x509 -req -in "$RUNNER_TEMP/liapoldus-smoke/tls/client.csr" \
+            -CA "$RUNNER_TEMP/liapoldus-smoke/tls/ca.pem" \
+            -CAkey "$RUNNER_TEMP/liapoldus-smoke/tls/ca.key" -CAcreateserial \
+            -out "$RUNNER_TEMP/liapoldus-smoke/tls/client.crt" -days 1 -sha256 \
+            -copy_extensions copy
+      - name: Create local target profile
+        run: |
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1]) / "liapoldus-smoke"
+          tls = root / "tls"
+          profile = {
+              "environment": "local",
+              "transport": "local-process",
+              "endpoint": "https://127.0.0.1:18080",
+              "caFile": str(tls / "ca.pem"),
+              "clientCertFile": str(tls / "client.crt"),
+              "clientKeyFile": str(tls / "client.key"),
+              "serverName": "localhost",
+              "coreBinary": str(pathlib.Path(sys.argv[1]) / "core"),
+              "statePath": str(root / "core.sqlite"),
+              "pidPath": str(root / "core.pid"),
+              "logPath": str(root / "core.log"),
+              "bootstrap": {
+                  "managementListen": "127.0.0.1:18080",
+                  "managementCertificate": str(tls / "core.crt"),
+                  "managementKey": str(tls / "core.key"),
+                  "managementClientCA": str(tls / "ca.pem"),
+                  "controlListen": "127.0.0.1:18081",
+                  "controlPublicURL": "https://localhost:18081",
+                  "controlCertificate": str(tls / "core.crt"),
+                  "controlKey": str(tls / "core.key"),
+                  "replicaClientCA": str(tls / "ca.pem"),
+                  "replicaServerCA": str(tls / "ca.pem"),
+                  "secretRoot": str(root / "secrets"),
+              },
+          }
+          (root / "profile.json").write_text(json.dumps(profile))
+          PY
+      - name: Run local Core lifecycle smoke test
+        run: |
+          export LIAPOLDUS_TARGETS_FILE="$RUNNER_TEMP/liapoldus-smoke/targets.json"
+          "$RUNNER_TEMP/liapoldus" target add local --profile "$RUNNER_TEMP/liapoldus-smoke/profile.json"
+          trap '"$RUNNER_TEMP/liapoldus" core stop --target local >/dev/null 2>&1 || true' EXIT
+          "$RUNNER_TEMP/liapoldus" core start --target local
+          "$RUNNER_TEMP/liapoldus" core status --target local
+          "$RUNNER_TEMP/liapoldus" target test local
+          "$RUNNER_TEMP/liapoldus" core stop --target local

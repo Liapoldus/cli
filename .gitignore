@@ -1,0 +1,19 @@
+# Local Core and Studio state
+.studio/
+*.sqlite
+*.sqlite-*
+*.pid
+*.log
+
+# Local target registry and credentials
+targets.json
+*.pem
+*.key
+*.crt
+
+# Go tooling output
+coverage.out
+coverage.html
+liapoldus
+liapoldus.exe
+dist/

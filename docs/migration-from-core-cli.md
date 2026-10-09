@@ -39,10 +39,10 @@
 ## Состояние breaking migration
 
 Core-side CLI entrypoints, bootstrap dispatcher, direct SQLite migration command
-и CLI asset удалены. В этом репозитории уже находится standalone revision/bundle
-boundary: `project inspect`, `validate`, `bundle build`, `plan` и guarded `apply`.
-Следующий executable slice — target registry, local process adapter и
-Management API transport; эти функции не возвращаются в Core.
+и CLI asset удалены. В этом репозитории находится standalone revision/bundle
+boundary: `project inspect`, `validate`, `bundle build`, `plan`, guarded `apply`,
+target registry, local process adapter и typed Management API transport. Эти
+функции не возвращаются в Core.
 
 Нельзя считать миграцию завершённой, если старые Core CLI routes, команды или
 параллельные lifecycle semantics остаются описанными как поддерживаемые.

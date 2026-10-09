@@ -25,6 +25,11 @@ project/
 `services/<service-id>/settings.json`. CLI не создаёт параллельный формат только
 для CI; Studio редактирует этот же файл schema-driven формой.
 
+Core-owned links читаются из JSON-файлов внутри
+`services/<service-id>/links/` в лексикографическом порядке и передаются как
+opaque object array. `.studio`, `.env*`, `*.key`, `*.pem`, `*.secret` и
+`secrets/` исключаются из bundle.
+
 ## 2. Revision requirement
 
 Команды `plan` и `apply` принимают commit SHA, tag или branch только как

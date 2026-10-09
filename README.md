@@ -9,19 +9,24 @@ Management API, но не содержит собственного пользо
 ## Что делает CLI
 
 - читает Studio Project из конкретной Git-ревизии;
-- валидирует manifest, service settings, links, schemas и environment profile;
+- проверяет наличие project manifest и валидность service settings;
 - собирает детерминированный config bundle;
 - показывает plan и diff для выбранного Core target;
 - применяет bundle к локальному или удалённому Core через API;
 - управляет несколькими Core targets и локальным Core process lifecycle;
-- возвращает наблюдаемые operation, generation, replica и readiness results;
+- ожидает операции, возвращённые Core после apply;
+- поддерживает HTTPS/mTLS connection profiles и remote approval evidence;
 - работает в GitHub Actions и других CI без зависимости от Studio.
 
 Executable v2 фиксирует обязательную границу revision: `plan`, `bundle build` и
 `apply` разрешают только Git commit, а `apply` дополнительно требует чистое
 дерево и явный `--confirm`. `plan` и `apply` отправляют bundle через Core
 Management API; Core сам владеет SQLite. Bundle собирается детерминированно из
-отсортированного project tree и не включает secrets/`.studio` state.
+указанной отсортированной Git-ревизии и не включает secrets/`.studio` state.
+
+Код разделён на domain, application, infrastructure и presentation слои.
+`cmd/liapoldus` — единственный composition root; Core API, Git и local-process
+доступ не просачиваются в application policy.
 
 ## Что CLI не делает
 

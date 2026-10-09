@@ -61,6 +61,23 @@ liapoldus apply \
 `--confirm` подтверждает только локальный intent. Он не заменяет remote
 approval и не даёт права, которых нет у credential identity.
 
+Для target с `approval: remote-required` CI передаёт CLI путь к JSON evidence:
+
+```json
+{
+  "repository": "https://github.com/example/forms-platform.git",
+  "revision": "0123456789abcdef",
+  "target": "production",
+  "approved": true,
+  "source": "github-environment",
+  "evidenceId": "deployment-run-123"
+}
+```
+
+CLI проверяет совпадение repository, exact revision и target до отправки
+bundle. Саму branch protection/environment approval продолжает предоставлять
+Git provider; CLI не подменяет его.
+
 ## 5. Reports
 
 CI публикует machine-readable report с:
