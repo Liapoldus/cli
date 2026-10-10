@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,38 @@ func (r Runner) Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func (r Runner) RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	studioMode, cleanArgs := isStudioEventsRequest(args)
+	if studioMode {
+		runID := studioRunID()
+		studioStdout := &studioEventWriter{output: stdout, runID: runID, kind: "stdout"}
+		studioStderr := &studioEventWriter{output: stdout, runID: runID, kind: "stderr"}
+		if err := emitStudioEvent(stdout, studioEvent{SchemaVersion: "cli-events/v1", Type: "run.started", RunID: runID}); err != nil {
+			return application.ExitOperation
+		}
+		code := r.runCommand(ctx, cleanArgs, studioStdout, studioStderr)
+		if err := studioStdout.Flush(); err != nil {
+			return application.ExitOperation
+		}
+		if err := studioStderr.Flush(); err != nil {
+			return application.ExitOperation
+		}
+		terminalType := "run.completed"
+		severity := ""
+		if code != application.ExitOK {
+			terminalType = "run.failed"
+			severity = "error"
+		}
+		if err := emitStudioEvent(stdout, studioEvent{SchemaVersion: "cli-events/v1", Type: terminalType, RunID: runID, Severity: severity, ExitCode: intPointer(code)}); err != nil {
+			return application.ExitOperation
+		}
+		return code
+	}
+	return r.runCommand(ctx, args, stdout, stderr)
+}
+
+func intPointer(value int) *int { return &value }
+
+func (r Runner) runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return fail(stderr, application.ExitArguments, "command is required")
 	}
@@ -51,6 +84,10 @@ func (r Runner) RunContext(ctx context.Context, args []string, stdout, stderr io
 		return r.core(args[1:], stdout, stderr)
 	case "operation":
 		return r.operation(ctx, args[1:], stdout, stderr)
+	case "observe":
+		if len(args) >= 2 && args[1] == "traffic" {
+			return r.observeTraffic(ctx, args[2:], stdout, stderr)
+		}
 	case "status":
 		return r.status(ctx, args[1:], stdout, stderr)
 	case "project":
@@ -76,6 +113,105 @@ func (r Runner) RunContext(ctx context.Context, args []string, stdout, stderr io
 		return r.deploy(ctx, args[1:], true, stdout, stderr)
 	}
 	return fail(stderr, application.ExitArguments, "unsupported command")
+}
+
+const maxTrafficReportBytes = 8 << 20
+
+func (r Runner) observeTraffic(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	options, err := parseOptions(args)
+	if err != nil {
+		return fail(stderr, application.ExitArguments, err.Error())
+	}
+	if options.target == "" {
+		return fail(stderr, application.ExitArguments, "--target is required")
+	}
+	target, err := r.registry(options.targets).Find(options.target)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if target.TrafficReportPath == "" {
+		return fail(stderr, application.ExitTarget, "target has no trafficReportPath")
+	}
+	path, relative, err := projectScopedReportPath(options.project, target.TrafficReportPath)
+	if err != nil {
+		return fail(stderr, application.ExitValidation, err.Error())
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(stderr, application.ExitOperation, err.Error())
+	}
+	body, err := readTrafficReport(path)
+	if err != nil {
+		return fail(stderr, application.ExitValidation, err.Error())
+	}
+	var report struct {
+		SchemaVersion string          `json:"schemaVersion"`
+		ProjectID     string          `json:"projectId"`
+		Target        string          `json:"target"`
+		Traffic       json.RawMessage `json:"traffic"`
+	}
+	if err := json.Unmarshal(body, &report); err != nil || report.SchemaVersion != "studio-reports/v1" || strings.TrimSpace(report.ProjectID) == "" || strings.TrimSpace(report.Target) == "" || report.Target != target.Name || !json.Valid(report.Traffic) {
+		return fail(stderr, application.ExitValidation, "invalid studio traffic report")
+	}
+	var traffic []json.RawMessage
+	if err := json.Unmarshal(report.Traffic, &traffic); err != nil || traffic == nil {
+		return fail(stderr, application.ExitValidation, "invalid studio traffic report")
+	}
+	if r.Source == nil {
+		return fail(stderr, application.ExitValidation, "project source is not configured")
+	}
+	expectedProjectID, err := r.Source.ProjectID(ctx, options.project, "HEAD")
+	if err != nil || expectedProjectID != report.ProjectID {
+		return fail(stderr, application.ExitValidation, "traffic report project does not match the opened project")
+	}
+	digest := sha256.Sum256(body)
+	return encode(stdout, map[string]any{
+		"schemaVersion": "studio-reports/v1",
+		"projectId":     report.ProjectID,
+		"target":        target.Name,
+		"reportPath":    relative,
+		"digest":        fmt.Sprintf("sha256:%x", digest),
+	})
+}
+
+func projectScopedReportPath(root, configured string) (string, string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve project root: %w", err)
+	}
+	clean := filepath.Clean(configured)
+	if filepath.IsAbs(configured) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("traffic report path must remain inside the project")
+	}
+	candidate := filepath.Join(root, clean)
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve traffic report: %w", err)
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("traffic report path escapes the project")
+	}
+	return resolved, filepath.ToSlash(relative), nil
+}
+
+func readTrafficReport(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read traffic report: %w", err)
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maxTrafficReportBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read traffic report: %w", err)
+	}
+	if len(body) > maxTrafficReportBytes {
+		return nil, errors.New("traffic report exceeds the safety limit")
+	}
+	return body, nil
 }
 
 func inspectBundle(args []string, stdout, stderr io.Writer) int {
@@ -314,6 +450,15 @@ func (r Runner) core(args []string, stdout, stderr io.Writer) int {
 	case "stop":
 		value, err := r.LocalCore.Stop(target)
 		return r.localResult(value, err, stdout, stderr)
+	case "restart":
+		if _, err := r.LocalCore.Stop(target); err != nil {
+			return fail(stderr, application.ExitTarget, err.Error())
+		}
+		value, err := r.LocalCore.Start(target)
+		if err != nil {
+			return fail(stderr, application.ExitTarget, err.Error())
+		}
+		return encode(stdout, map[string]any{"target": target.Name, "restarted": true, "result": value})
 	case "status":
 		status, err := r.LocalCore.Status(target)
 		code := application.ExitOK

@@ -59,3 +59,11 @@ func TestRegistryRejectsHTTPSWithoutClientCertificate(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestRegistryRejectsTrafficReportOutsideProject(t *testing.T) {
+	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
+	err := registry.Add(domain.Target{Name: "local", Transport: domain.TransportLocalProcess, TrafficReportPath: "../traffic.json"})
+	if err == nil || !strings.Contains(err.Error(), "escapes the project") {
+		t.Fatalf("error=%v", err)
+	}
+}

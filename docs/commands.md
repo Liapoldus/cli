@@ -52,6 +52,7 @@ liapoldus target list
 liapoldus target inspect production
 liapoldus target add production --profile ./environments/production.json
 liapoldus target test production
+liapoldus observe traffic --project ./project --target local
 liapoldus core status --target local
 liapoldus core start --target local
 liapoldus core stop --target local
@@ -60,7 +61,14 @@ liapoldus core database backup --target local --output ./backup.sqlite
 liapoldus core database restore --target local --input ./backup.sqlite
 ```
 
-Target profile — JSON без private key или secret value. Credentials выбираются
+Target profile — JSON без private key или secret value. Для report-based
+observation target может дополнительно объявить `trafficReportPath` —
+project-relative путь к CLI/Core report формата `studio-reports/v1`.
+`observe traffic` только проверяет этот immutable report, его project/target и
+размер, затем публикует его relative path и SHA-256 для Studio; он не
+подключается к Core и не копирует raw payload в UI.
+
+Credentials выбираются
 по reference из environment/CI secret provider; интеграция с OS credential
 store остаётся production-ready задачей.
 
@@ -110,3 +118,21 @@ tree и не должен автоматически коммититься в G
 
 Точные коды будут зафиксированы в generated CLI contract и не должны зависеть
 от текста human-readable сообщения.
+
+## Studio machine-readable stream
+
+Desktop Studio запускает CLI с внутренним флагом `--studio-events`. Этот флаг
+не является произвольным shell-режимом и не меняет ownership credentials/Core.
+CLI emits one JSON object per line using `cli-events/v1`:
+
+```json
+{"schemaVersion":"cli-events/v1","type":"run.started","runId":"..."}
+{"schemaVersion":"cli-events/v1","type":"run.output","runId":"...","payload":{}}
+{"schemaVersion":"cli-events/v1","type":"diagnostic","runId":"...","code":"cli.stderr","message":"liapoldus emitted a non-JSON diagnostic"}
+{"schemaVersion":"cli-events/v1","type":"run.completed","runId":"...","exitCode":0}
+```
+
+Plain command output is carried only as a JSON `payload`; human-readable stderr
+is replaced with a generic diagnostic so target paths, credentials and internal
+details do not cross the Studio boundary. The flag is intended for the typed
+Studio adapter and is stripped before normal command dispatch.

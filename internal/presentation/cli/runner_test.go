@@ -59,6 +59,29 @@ func TestApplyUsesRequestedGitRevision(t *testing.T) {
 	}
 }
 
+func TestObserveTrafficPublishesProjectScopedReport(t *testing.T) {
+	project := t.TempDir()
+	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
+	runRunnerGit(t, project, "init")
+	runRunnerGit(t, project, "config", "user.email", "test@example.test")
+	runRunnerGit(t, project, "config", "user.name", "Test")
+	runRunnerGit(t, project, "add", "project.yaml")
+	runRunnerGit(t, project, "commit", "-m", "initial")
+	reportPath := filepath.Join(project, "reports", "traffic.json")
+	writeRunnerFile(t, project, "reports/traffic.json", `{"schemaVersion":"studio-reports/v1","projectId":"demo","target":"local","traffic":[{"method":"GET"}]}`)
+	registryPath := filepath.Join(t.TempDir(), "targets.json")
+	registry := targets.Registry{Path: registryPath}
+	if err := registry.Add(domain.Target{Name: "local", Environment: "local", Transport: domain.TransportLocalProcess, TrafficReportPath: "reports/traffic.json"}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	runner := Runner{Source: git.Repository{}, Registry: registry}
+	code := runner.Run([]string{"observe", "traffic", "--project", project, "--target", "local"}, &output, &output)
+	if code != application.ExitOK || !strings.Contains(output.String(), `"reportPath":"reports/traffic.json"`) || !strings.Contains(output.String(), `"digest":"sha256:`) {
+		t.Fatalf("code=%d output=%s report=%s", code, output.String(), reportPath)
+	}
+}
+
 func TestApplyRequiresConfirmationAndCleanTree(t *testing.T) {
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
@@ -177,9 +200,99 @@ func TestRunnerReadsTokenFromStdinWithoutIncludingItInErrors(t *testing.T) {
 	}
 }
 
+func TestStudioEventsModeEmitsVersionedJSONLAndHidesPlainErrors(t *testing.T) {
+	var output bytes.Buffer
+	runner := Runner{}
+	if code := runner.Run([]string{"version", studioEventsFlag}, &output, &output); code != application.ExitOK {
+		t.Fatalf("version code=%d output=%s", code, output.String())
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("events=%q", lines)
+	}
+	var started, result, completed studioEvent
+	if err := json.Unmarshal([]byte(lines[0]), &started); err != nil || started.Type != "run.started" || started.SchemaVersion != "cli-events/v1" {
+		t.Fatalf("started=%+v err=%v", started, err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &result); err != nil || result.Type != "run.output" || string(result.Payload) != `{"version":"dev"}` {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &completed); err != nil || completed.Type != "run.completed" || completed.ExitCode == nil || *completed.ExitCode != 0 {
+		t.Fatalf("completed=%+v err=%v", completed, err)
+	}
+
+	output.Reset()
+	if code := runner.Run([]string{"unsupported", studioEventsFlag}, &output, &output); code != application.ExitArguments {
+		t.Fatalf("unsupported code=%d output=%s", code, output.String())
+	}
+	if strings.Contains(output.String(), "unsupported command") || !strings.Contains(output.String(), `"type":"diagnostic"`) || !strings.Contains(output.String(), `"type":"run.failed"`) {
+		t.Fatalf("plain error leaked or terminal event missing: %s", output.String())
+	}
+}
+
+func TestStudioEventWriterPreservesReportAndOperationMetadata(t *testing.T) {
+	var output bytes.Buffer
+	writer := &studioEventWriter{output: &output, runID: "run-1", kind: "stdout"}
+	if _, err := writer.Write([]byte(`{"operationId":"op-1","target":"local","state":"running"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte(`{"reportPath":".studio/reports/op-1.json","digest":"sha256:abc"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"type":"operation.updated"`) || !strings.Contains(lines[0], `"operationId":"op-1"`) || !strings.Contains(lines[1], `"type":"report.available"`) || !strings.Contains(lines[1], `.studio/reports/op-1.json`) {
+		t.Fatalf("unexpected events: %s", output.String())
+	}
+}
+
+func TestCoreRestartUsesBoundedLocalLifecycle(t *testing.T) {
+	registry := targetRegistryStub{target: domain.Target{Name: "local", Transport: domain.TransportLocalProcess}}
+	lifecycle := &localCoreStub{}
+	var output bytes.Buffer
+	runner := Runner{Registry: registry, LocalCore: lifecycle}
+	if code := runner.Run([]string{"core", "restart", "--target", "local"}, &output, &output); code != application.ExitOK {
+		t.Fatalf("code=%d output=%s", code, output.String())
+	}
+	if strings.Join(lifecycle.calls, ",") != "stop,start" || !strings.Contains(output.String(), `"restarted":true`) {
+		t.Fatalf("calls=%v output=%s", lifecycle.calls, output.String())
+	}
+}
+
 type credentialProviderStub struct {
 	value string
 }
+
+type targetRegistryStub struct {
+	target domain.Target
+}
+
+func (s targetRegistryStub) List() ([]domain.Target, error) { return []domain.Target{s.target}, nil }
+func (s targetRegistryStub) Find(name string) (domain.Target, error) {
+	if name != s.target.Name {
+		return domain.Target{}, domain.ErrTargetNotConfigured
+	}
+	return s.target, nil
+}
+func (targetRegistryStub) Add(domain.Target) error { return nil }
+
+type localCoreStub struct {
+	calls []string
+}
+
+func (s *localCoreStub) Start(domain.Target) (map[string]any, error) {
+	s.calls = append(s.calls, "start")
+	return map[string]any{"state": "running"}, nil
+}
+func (s *localCoreStub) Stop(domain.Target) (map[string]any, error) {
+	s.calls = append(s.calls, "stop")
+	return map[string]any{"state": "stopped"}, nil
+}
+func (*localCoreStub) Status(domain.Target) (domain.LocalCoreStatus, error) {
+	return domain.LocalCoreStatus{}, nil
+}
+func (*localCoreStub) Logs(domain.Target) ([]byte, error)  { return nil, nil }
+func (*localCoreStub) Backup(domain.Target, string) error  { return nil }
+func (*localCoreStub) Restore(domain.Target, string) error { return nil }
 
 func (s credentialProviderStub) Resolve(context.Context, string) (string, error) {
 	return s.value, nil

@@ -10,6 +10,7 @@ targets:
   - name: local
     environment: local
     transport: local-process
+    trafficReportPath: reports/traffic.json
     endpoint: https://127.0.0.1:8080
   - name: production
     environment: production
@@ -58,6 +59,11 @@ targets:
 
 `liapoldus core start/stop/status/logs` работают только с объявленным
 `local-process`; remote API target не получает процессный доступ.
+
+`trafficReportPath` — необязательный project-relative путь к report, который
+создаёт CLI/Core observation pipeline. Он не может быть absolute или выходить
+за пределы Project. Studio получает только report event, повторно применяет
+redaction и сохраняет безопасную копию в `.studio/reports`.
 
 ## 2. Multiple Core workflow
 

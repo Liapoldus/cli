@@ -62,6 +62,9 @@ func (r Registry) List() ([]domain.Target, error) {
 		if err := validateEndpoint(value.Targets[index]); err != nil {
 			return nil, err
 		}
+		if err := validateProjectRelativeReportPath(value.Targets[index]); err != nil {
+			return nil, err
+		}
 		if value.Targets[index].Approval != "" && value.Targets[index].Approval != domain.ApprovalRemoteRequired {
 			return nil, fmt.Errorf("target %q has unsupported approval policy %q", value.Targets[index].Name, value.Targets[index].Approval)
 		}
@@ -101,6 +104,9 @@ func (r Registry) Add(target domain.Target) error {
 		return fmt.Errorf("target %q has unsupported transport %q", target.Name, target.Transport)
 	}
 	if err := validateEndpoint(target); err != nil {
+		return err
+	}
+	if err := validateProjectRelativeReportPath(target); err != nil {
 		return err
 	}
 	if target.Approval != "" && target.Approval != domain.ApprovalRemoteRequired {
@@ -170,6 +176,21 @@ func validateEndpoint(target domain.Target) error {
 	}
 	if parsed.Scheme == "https" && (target.ClientCertFile == "" || target.ClientKeyFile == "") {
 		return fmt.Errorf("target %q HTTPS endpoint requires client certificate and key", target.Name)
+	}
+	return nil
+}
+
+func validateProjectRelativeReportPath(target domain.Target) error {
+	value := strings.TrimSpace(target.TrafficReportPath)
+	if value == "" {
+		return nil
+	}
+	if filepath.IsAbs(value) || strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("target %q traffic report path must be project-relative", target.Name)
+	}
+	clean := filepath.Clean(value)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("target %q traffic report path escapes the project", target.Name)
 	}
 	return nil
 }

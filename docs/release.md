@@ -10,7 +10,8 @@ git push origin v2.0.0
 ```
 
 GitHub Actions запускает GoReleaser и публикует архивы для Linux и macOS
-(`amd64`, `arm64`), Windows (`amd64`) и `checksums.txt`. Версия бинаря
+(`amd64`, `arm64`), Windows (`amd64`) и `checksums.txt`. Для каждого архива
+публикуются Sigstore bundle, SPDX SBOM и GitHub build provenance. Версия бинаря
 встраивается в `liapoldus version`; артефакты не зависят от Studio или Core
 checkout.
 
@@ -27,6 +28,11 @@ install -m 0755 liapoldus /usr/local/bin/liapoldus
 liapoldus version
 sha256sum -c checksums.txt --ignore-missing
 ```
+
+Перед установкой production-артефакта дополнительно проверьте его Sigstore
+bundle и provenance в GitHub release. SBOM-файл используется для dependency и
+license inventory; отсутствие SBOM, подписи или provenance делает release
+неприемлемым для production.
 
 На Windows проверка выполняется через `Get-FileHash`, после чего `liapoldus.exe`
 добавляется в пользовательский `PATH`. Target registry и credentials не входят

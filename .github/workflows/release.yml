@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -26,3 +28,36 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/cli-${{ github.ref_name }}.sbom.spdx.json
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+      - name: Sign release archives and SBOM
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          artifacts=(dist/*.tar.gz dist/*.zip)
+          test "${#artifacts[@]}" -gt 0
+          for artifact in "${artifacts[@]}"; do
+            cosign sign-blob --yes --bundle "${artifact}.sigstore.json" "${artifact}"
+          done
+          cosign sign-blob --yes --bundle "dist/cli-${VERSION}.sbom.spdx.json.sigstore.json" \
+            "dist/cli-${VERSION}.sbom.spdx.json"
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*.tar.gz,dist/*.zip'
+      - name: Publish signed metadata
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/cli-${{ github.ref_name }}.sbom.spdx.json
+            dist/cli-${{ github.ref_name }}.sbom.spdx.json.sigstore.json
+            dist/*.tar.gz.sigstore.json
+            dist/*.zip.sigstore.json
