@@ -97,7 +97,7 @@ jobs:
           cache-dependency-path: core/go.sum
       - name: Configure Core and Plugin SDK workspace
         run: |
-          go work init ./core ./plugin-sdk
+          go work init ./ ./core ./plugin-sdk
           go work edit -go=1.26.0 go.work
           go work edit -replace=github.com/Liapoldus/plugin-sdk/v2@v2.0.0=./plugin-sdk go.work
       - name: Build Core
