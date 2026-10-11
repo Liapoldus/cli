@@ -31,3 +31,9 @@ func TestParseOptionsAcceptsTokenStdin(t *testing.T) {
 		t.Fatalf("options=%+v err=%v", options, err)
 	}
 }
+
+func TestParseOptionsRejectsRawTokenArgument(t *testing.T) {
+	if _, err := parseOptions([]string{"--token", "must-not-be-accepted"}); err == nil {
+		t.Fatal("raw token argument was accepted")
+	}
+}

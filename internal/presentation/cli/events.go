@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,9 +30,9 @@ type studioEvent struct {
 }
 
 // studioEventWriter turns the CLI's existing one-line JSON result surface into
-// the versioned stream consumed by Studio. It never forwards plain stderr or
-// human-readable command errors because those may contain implementation paths
-// or target details; the typed diagnostic stays intentionally generic.
+// the versioned stream consumed by Studio. Stderr is reduced to a bounded,
+// credential-redacted diagnostic. Plain text stdout (used by typed log/inspect
+// commands) is also bounded and redacted before it reaches the renderer.
 type studioEventWriter struct {
 	output io.Writer
 	runID  string
@@ -77,7 +78,7 @@ func (writer *studioEventWriter) emitLine(line string) error {
 			RunID:         writer.runID,
 			Severity:      "warning",
 			Code:          "cli.stderr",
-			Message:       "liapoldus emitted a non-JSON diagnostic",
+			Message:       safeStudioDiagnostic(line),
 		})
 	}
 	line = string(bytes.TrimSpace([]byte(line)))
@@ -85,6 +86,18 @@ func (writer *studioEventWriter) emitLine(line string) error {
 		return nil
 	}
 	if !json.Valid([]byte(line)) {
+		if writer.kind == "stdout" {
+			payload, err := json.Marshal(map[string]string{"text": safeStudioDiagnostic(line)})
+			if err != nil {
+				return err
+			}
+			return emitStudioEvent(writer.output, studioEvent{
+				SchemaVersion: "cli-events/v1",
+				Type:          "run.output",
+				RunID:         writer.runID,
+				Payload:       payload,
+			})
+		}
 		return emitStudioEvent(writer.output, studioEvent{
 			SchemaVersion: "cli-events/v1",
 			Type:          "diagnostic",
@@ -130,6 +143,34 @@ func (writer *studioEventWriter) emitLine(line string) error {
 		Percent:       metadata.Percent,
 		Payload:       json.RawMessage(line),
 	})
+}
+
+func safeStudioDiagnostic(value string) string {
+	message := strings.TrimSpace(value)
+	if message == "" {
+		return "liapoldus emitted a non-JSON diagnostic"
+	}
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "-----begin ") && strings.Contains(lower, "private key-----") {
+		return "[redacted private key material]"
+	}
+	if index := strings.Index(lower, "bearer "); index >= 0 {
+		message = message[:index+len("bearer ")] + "[redacted]"
+	}
+	for _, key := range []string{"token", "password", "secret", "private-key", "privatekey", "authorization"} {
+		lower = strings.ToLower(message)
+		for _, separator := range []string{"=", ":"} {
+			marker := key + separator
+			if index := strings.Index(lower, marker); index >= 0 {
+				message = message[:index+len(marker)] + "[redacted]"
+				lower = strings.ToLower(message)
+			}
+		}
+	}
+	if len(message) > 512 {
+		message = message[:512] + "…"
+	}
+	return message
 }
 
 func emitStudioEvent(output io.Writer, event studioEvent) error {

@@ -8,16 +8,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Liapoldus/cli/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 // Repository is the Git-backed project source used by the application layer.
 type Repository struct{}
+
+const WorkingTreeRevision = "WORKING_TREE"
 
 func (Repository) ResolveRevision(ctx context.Context, projectPath, revision string) (string, error) {
 	if strings.TrimSpace(revision) == "" {
@@ -25,6 +30,11 @@ func (Repository) ResolveRevision(ctx context.Context, projectPath, revision str
 	}
 	output, err := run(ctx, projectPath, "rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
+		if revision == "HEAD" {
+			if _, statErr := os.Stat(filepath.Join(projectPath, "project.yaml")); statErr == nil {
+				return WorkingTreeRevision, nil
+			}
+		}
 		return "", domain.ErrInvalidRevision
 	}
 	return strings.TrimSpace(output), nil
@@ -64,6 +74,78 @@ func (Repository) Files(ctx context.Context, projectPath, revision string) ([]do
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+// RuntimeArtifacts reads the exact immutable binaries declared by each
+// service in a Project revision. Legacy service manifests are rejected so a
+// runtime can never silently substitute another local binary by plugin ID.
+func (Repository) RuntimeArtifacts(ctx context.Context, projectPath, revision string) ([]domain.ArtifactReference, error) {
+	paths, err := treePaths(ctx, projectPath, revision)
+	if err != nil {
+		return nil, err
+	}
+	artifacts := make([]domain.ArtifactReference, 0)
+	seen := make(map[string]struct{})
+	for _, path := range paths {
+		parts := strings.Split(path, "/")
+		if len(parts) != 3 || parts[0] != "services" || parts[2] != "service.yaml" {
+			continue
+		}
+		serviceID := parts[1]
+		if serviceID == "" || serviceID == "." || serviceID == ".." || strings.ContainsAny(serviceID, "/\\\x00") {
+			return nil, fmt.Errorf("invalid service path %q", path)
+		}
+		if _, ok := seen[serviceID]; ok {
+			return nil, fmt.Errorf("duplicate service manifest for %s", serviceID)
+		}
+		seen[serviceID] = struct{}{}
+		body, err := show(ctx, projectPath, revision, path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		var manifest struct {
+			ID       string `yaml:"id"`
+			Version  string `yaml:"version"`
+			Artifact struct {
+				ID       string `yaml:"id"`
+				Version  string `yaml:"version"`
+				Platform string `yaml:"platform"`
+				Digest   string `yaml:"digest"`
+			} `yaml:"artifact"`
+			Runtime struct {
+				Command         string `yaml:"command"`
+				ControlEndpoint string `yaml:"controlEndpoint"`
+				PeerEndpoint    string `yaml:"peerEndpoint"`
+			} `yaml:"runtime"`
+		}
+		decoder := yaml.NewDecoder(bytes.NewReader(body))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&manifest); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", path, err)
+		}
+		var extra any
+		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+			if err == nil {
+				return nil, fmt.Errorf("invalid %s: multiple YAML documents are not supported", path)
+			}
+			return nil, fmt.Errorf("invalid %s: %w", path, err)
+		}
+		artifact := domain.ArtifactReference{
+			ID: manifest.Artifact.ID, Version: manifest.Artifact.Version,
+			Platform: manifest.Artifact.Platform, Digest: manifest.Artifact.Digest,
+			Command: manifest.Runtime.Command, ControlEndpoint: manifest.Runtime.ControlEndpoint,
+			PeerEndpoint: manifest.Runtime.PeerEndpoint,
+		}
+		if manifest.ID != serviceID || manifest.Version != artifact.Version {
+			return nil, fmt.Errorf("invalid %s: service id/version must match its artifact reference", path)
+		}
+		if err := artifact.Validate(serviceID); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", path, err)
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ID < artifacts[j].ID })
+	return artifacts, nil
 }
 
 func (Repository) ServiceSettings(ctx context.Context, projectPath, revision string) ([]domain.Service, error) {
@@ -143,10 +225,21 @@ func (Repository) ProjectID(ctx context.Context, projectPath, revision string) (
 }
 
 func treePaths(ctx context.Context, projectPath, revision string) ([]string, error) {
+	if revision == WorkingTreeRevision {
+		output, err := run(ctx, projectPath, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+		if err != nil {
+			return nil, fmt.Errorf("list working tree: %w", err)
+		}
+		return splitPaths(output), nil
+	}
 	output, err := run(ctx, projectPath, "ls-tree", "-r", "-z", "--name-only", revision)
 	if err != nil {
 		return nil, fmt.Errorf("list revision tree: %w", err)
 	}
+	return splitPaths(output), nil
+}
+
+func splitPaths(output string) []string {
 	parts := bytes.Split([]byte(output), []byte{0})
 	paths := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -154,10 +247,25 @@ func treePaths(ctx context.Context, projectPath, revision string) ([]string, err
 			paths = append(paths, filepath.ToSlash(string(part)))
 		}
 	}
-	return paths, nil
+	return paths
 }
 
 func show(ctx context.Context, projectPath, revision, path string) ([]byte, error) {
+	if revision == WorkingTreeRevision {
+		clean, err := filepath.Abs(filepath.Join(projectPath, filepath.FromSlash(path)))
+		if err != nil {
+			return nil, err
+		}
+		root, err := filepath.Abs(projectPath)
+		if err != nil || clean != root && !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			return nil, errors.New("working tree path escapes project")
+		}
+		info, err := os.Lstat(clean)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, errors.New("working tree file is not a regular file")
+		}
+		return os.ReadFile(clean)
+	}
 	command := exec.CommandContext(ctx, "git", "show", revision+":"+path)
 	command.Dir = projectPath
 	return command.Output()

@@ -82,3 +82,19 @@ compatibility metadata. Несовместимость обнаруживает�
 
 Core API не должен знать о Studio. Studio может показывать CLI reports, но не
 становится скрытым API proxy.
+
+## Core-backed plugin metadata
+
+Management API публикует Core-owned resources:
+
+```text
+POST /api/plugins/{instanceId}/replicas/register
+GET  /api/plugins/{instanceId}/manifest
+GET  /api/plugins/{instanceId}/schema
+GET  /api/plugins/{instanceId}/status
+```
+
+CLI отправляет в registration только безопасные runtime metadata. Core
+проверяет live replica и сам вызывает Plugin SDK REST API для manifest,
+configuration schema, identity и readiness. В CLI нет Plugin SDK client и
+нет прямого plugin endpoint fallback.

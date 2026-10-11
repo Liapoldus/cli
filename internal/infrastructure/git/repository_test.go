@@ -52,6 +52,55 @@ func TestRepositoryReadsFilesFromRequestedRevision(t *testing.T) {
 	}
 }
 
+func TestRuntimeArtifactsReadExactServiceReferenceAtRevision(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project, "project.yaml", "id: demo\n")
+	writeFile(t, project, "services/server/service.yaml", validServiceManifest("server", "1.0.0", "sha256:"+strings.Repeat("a", 64)))
+	gitCommand(t, project, "init")
+	gitCommand(t, project, "config", "user.email", "test@example.test")
+	gitCommand(t, project, "config", "user.name", "Test")
+	gitCommand(t, project, "add", ".")
+	gitCommand(t, project, "commit", "-m", "first")
+	first := gitCommand(t, project, "rev-parse", "HEAD")
+	writeFile(t, project, "services/server/service.yaml", validServiceManifest("server", "2.0.0", "sha256:"+strings.Repeat("b", 64)))
+	gitCommand(t, project, "add", ".")
+	gitCommand(t, project, "commit", "-m", "second")
+
+	artifacts, err := (Repository{}).RuntimeArtifacts(context.Background(), project, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Version != "1.0.0" || artifacts[0].Digest != "sha256:"+strings.Repeat("a", 64) || artifacts[0].Command != "server" || artifacts[0].PeerEndpoint != "https://server:9643" {
+		t.Fatalf("runtime artifacts from pinned revision = %+v", artifacts)
+	}
+}
+
+func TestRuntimeArtifactsRejectLegacyAndUnsafeManifests(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		manifest string
+	}{
+		{name: "legacy", manifest: "id: server\nname: Server\nversion: 1.0.0\nmanifestVersion: v1\nsettingsSchema: ''\n"},
+		{name: "external-control-endpoint", manifest: strings.Replace(validServiceManifest("server", "1.0.0", "sha256:"+strings.Repeat("a", 64)), "https://server:9443", "https://attacker.invalid:9443", 1)},
+		{name: "multiple-documents", manifest: validServiceManifest("server", "1.0.0", "sha256:"+strings.Repeat("a", 64)) + "---\nid: second\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := t.TempDir()
+			writeFile(t, project, "project.yaml", "id: demo\n")
+			writeFile(t, project, "services/server/service.yaml", test.manifest)
+			gitCommand(t, project, "init")
+			gitCommand(t, project, "add", ".")
+			if _, err := (Repository{}).RuntimeArtifacts(context.Background(), project, WorkingTreeRevision); err == nil {
+				t.Fatal("unsafe or legacy runtime manifest was accepted")
+			}
+		})
+	}
+}
+
+func validServiceManifest(id, version, digest string) string {
+	return "id: " + id + "\nversion: " + version + "\nartifact:\n  id: " + id + "\n  version: " + version + "\n  platform: linux/arm64\n  digest: " + digest + "\nruntime:\n  command: " + id + "\n  controlEndpoint: https://" + id + ":9443\n  peerEndpoint: https://" + id + ":9643\n"
+}
+
 func findFile(files []domain.File, path string) (domain.File, bool) {
 	for _, file := range files {
 		if file.Path == path {

@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -36,6 +37,15 @@ func (s *operationCoreStub) Operation(context.Context, string) (domain.Operation
 	}
 	s.index++
 	return domain.OperationResponse{State: s.states[index]}, nil
+}
+func (s *operationCoreStub) PluginMetadata(context.Context, string, string) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
+func (s *operationCoreStub) RegisterPlugin(context.Context, domain.PluginRegistrationMetadata) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
+func (s *operationCoreStub) EnsurePluginLink(context.Context, domain.PluginLinkPolicyRequest, string) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
 }
 
 func TestOperationWatchSuccessfulStates(t *testing.T) {

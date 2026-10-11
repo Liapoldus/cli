@@ -22,17 +22,22 @@ type Runner struct {
 	Registry        domain.TargetRegistry
 	RegistryFactory func(path string) domain.TargetRegistry
 	Credentials     domain.CredentialProvider
+	CredentialVault domain.CredentialVault
+	PromptSecret    func(prompt string) ([]byte, error)
 	TokenReader     io.Reader
-	LocalCore       domain.LocalCore
+	CoreState       domain.CoreStateFiles
 	CoreFactory     CoreClientFactory
+	Artifacts       domain.ArtifactRegistry
+	Docker          domain.DockerProvider
 }
 
 var Version = "dev"
 
 type CoreClientFactory func(connection domain.CoreConnection) (domain.CoreClient, error)
 
-func New(source domain.ProjectSource, registry domain.TargetRegistry, registryFactory func(path string) domain.TargetRegistry, credentials domain.CredentialProvider, tokenReader io.Reader, localCore domain.LocalCore, coreFactory CoreClientFactory) Runner {
-	return Runner{Source: source, Registry: registry, RegistryFactory: registryFactory, Credentials: credentials, TokenReader: tokenReader, LocalCore: localCore, CoreFactory: coreFactory}
+func New(source domain.ProjectSource, registry domain.TargetRegistry, registryFactory func(path string) domain.TargetRegistry, credentials domain.CredentialProvider, tokenReader io.Reader, coreState domain.CoreStateFiles, coreFactory CoreClientFactory) Runner {
+	vault, _ := credentials.(domain.CredentialVault)
+	return Runner{Source: source, Registry: registry, RegistryFactory: registryFactory, Credentials: credentials, CredentialVault: vault, TokenReader: tokenReader, CoreState: coreState, CoreFactory: coreFactory}
 }
 
 func (r Runner) Run(args []string, stdout, stderr io.Writer) int {
@@ -48,7 +53,12 @@ func (r Runner) RunContext(ctx context.Context, args []string, stdout, stderr io
 		if err := emitStudioEvent(stdout, studioEvent{SchemaVersion: "cli-events/v1", Type: "run.started", RunID: runID}); err != nil {
 			return application.ExitOperation
 		}
-		code := r.runCommand(ctx, cleanArgs, studioStdout, studioStderr)
+		code := application.ExitOK
+		if isCredentialMutation(cleanArgs) {
+			code = fail(studioStderr, application.ExitArguments, "credential changes require the CLI interactive terminal and cannot be invoked through Studio")
+		} else {
+			code = r.runCommand(ctx, cleanArgs, studioStdout, studioStderr)
+		}
 		if err := studioStdout.Flush(); err != nil {
 			return application.ExitOperation
 		}
@@ -69,6 +79,10 @@ func (r Runner) RunContext(ctx context.Context, args []string, stdout, stderr io
 	return r.runCommand(ctx, args, stdout, stderr)
 }
 
+func isCredentialMutation(args []string) bool {
+	return len(args) >= 2 && args[0] == "credential" && args[1] != "status"
+}
+
 func intPointer(value int) *int { return &value }
 
 func (r Runner) runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -80,8 +94,14 @@ func (r Runner) runCommand(ctx context.Context, args []string, stdout, stderr io
 		return encode(stdout, map[string]string{"version": Version})
 	case "target":
 		return r.target(ctx, args[1:], stdout, stderr)
+	case "credential":
+		return r.credential(ctx, args[1:], stdout, stderr)
+	case "plugin":
+		return r.plugin(ctx, args[1:], stdout, stderr)
+	case "runtime":
+		return r.runtimePlan(ctx, args[1:], stdout, stderr)
 	case "core":
-		return r.core(args[1:], stdout, stderr)
+		return r.core(ctx, args[1:], stdout, stderr)
 	case "operation":
 		return r.operation(ctx, args[1:], stdout, stderr)
 	case "observe":
@@ -312,6 +332,7 @@ func (r Runner) target(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err := json.Unmarshal(body, &item); err != nil {
 			return fail(stderr, application.ExitArguments, fmt.Sprintf("invalid target profile: %v", err))
 		}
+		item = resolveProfilePaths(item, filepath.Dir(profile))
 		item.Name = args[1]
 		if err := registry.Add(item); err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
@@ -329,6 +350,35 @@ func (r Runner) target(ctx context.Context, args []string, stdout, stderr io.Wri
 	default:
 		return fail(stderr, application.ExitArguments, "unsupported target subcommand")
 	}
+}
+
+// Target profiles are portable documents. Relative file references are
+// resolved beside the selected profile before the item enters the global CLI
+// registry; otherwise the registry's own directory would silently become the
+// base and a valid Studio-selected profile would fail later at target test.
+func resolveProfilePaths(item domain.Target, base string) domain.Target {
+	resolve := func(value string) string {
+		if value == "" || filepath.IsAbs(value) {
+			return value
+		}
+		return filepath.Clean(filepath.Join(base, value))
+	}
+	item.CoreBinary = resolve(item.CoreBinary)
+	item.StatePath = resolve(item.StatePath)
+	item.PIDPath = resolve(item.PIDPath)
+	item.LogPath = resolve(item.LogPath)
+	item.CAFile = resolve(item.CAFile)
+	item.ClientCertFile = resolve(item.ClientCertFile)
+	item.ClientKeyFile = resolve(item.ClientKeyFile)
+	item.Bootstrap.ManagementCertificate = resolve(item.Bootstrap.ManagementCertificate)
+	item.Bootstrap.ManagementKey = resolve(item.Bootstrap.ManagementKey)
+	item.Bootstrap.ManagementClientCA = resolve(item.Bootstrap.ManagementClientCA)
+	item.Bootstrap.ControlCertificate = resolve(item.Bootstrap.ControlCertificate)
+	item.Bootstrap.ControlKey = resolve(item.Bootstrap.ControlKey)
+	item.Bootstrap.ReplicaClientCA = resolve(item.Bootstrap.ReplicaClientCA)
+	item.Bootstrap.ReplicaServerCA = resolve(item.Bootstrap.ReplicaServerCA)
+	item.Bootstrap.SecretRoot = resolve(item.Bootstrap.SecretRoot)
+	return item
 }
 
 func (r Runner) testTarget(ctx context.Context, target domain.Target, stdout, stderr io.Writer) int {
@@ -423,7 +473,7 @@ func (r Runner) operation(ctx context.Context, args []string, stdout, stderr io.
 	return application.ExitOK
 }
 
-func (r Runner) core(args []string, stdout, stderr io.Writer) int {
+func (r Runner) core(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return fail(stderr, application.ExitArguments, "core subcommand is required")
 	}
@@ -445,40 +495,31 @@ func (r Runner) core(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "start":
-		value, err := r.LocalCore.Start(target)
-		return r.localResult(value, err, stdout, stderr)
+		return r.coreDockerCommand(ctx, "start", target, stdout, stderr)
 	case "stop":
-		value, err := r.LocalCore.Stop(target)
-		return r.localResult(value, err, stdout, stderr)
+		return r.coreDockerCommand(ctx, "stop", target, stdout, stderr)
 	case "restart":
-		if _, err := r.LocalCore.Stop(target); err != nil {
-			return fail(stderr, application.ExitTarget, err.Error())
-		}
-		value, err := r.LocalCore.Start(target)
-		if err != nil {
-			return fail(stderr, application.ExitTarget, err.Error())
-		}
-		return encode(stdout, map[string]any{"target": target.Name, "restarted": true, "result": value})
+		return r.coreDockerCommand(ctx, "restart", target, stdout, stderr)
 	case "status":
-		status, err := r.LocalCore.Status(target)
-		code := application.ExitOK
-		if err != nil {
-			code = application.ExitTarget
-		}
-		if encode(stdout, status) != application.ExitOK {
-			return application.ExitOperation
-		}
-		return code
+		return r.coreDockerCommand(ctx, "status", target, stdout, stderr)
 	case "logs":
-		body, err := r.LocalCore.Logs(target)
-		if err != nil {
-			return fail(stderr, application.ExitTarget, err.Error())
-		}
-		_, _ = stdout.Write(body)
-		return application.ExitOK
+		return r.coreDockerCommand(ctx, "logs", target, stdout, stderr)
 	case "database":
 		if len(args) < 2 {
 			return fail(stderr, application.ExitArguments, "database action is required")
+		}
+		if r.CoreState == nil {
+			return fail(stderr, application.ExitTarget, "Core state file adapter is not configured")
+		}
+		if r.Docker == nil {
+			return fail(stderr, application.ExitTarget, "Docker runtime is not configured")
+		}
+		state, statusErr := r.dockerCoreStatus(ctx, target, runtimeLabel("target", target.Name))
+		if statusErr != nil {
+			return fail(stderr, application.ExitTarget, statusErr.Error())
+		}
+		if running, _ := state["running"].(bool); running {
+			return fail(stderr, application.ExitTarget, "stop Docker Core before database backup or restore")
 		}
 		switch args[1] {
 		case "backup":
@@ -486,7 +527,7 @@ func (r Runner) core(args []string, stdout, stderr io.Writer) int {
 			if !ok || output == "" {
 				return fail(stderr, application.ExitArguments, "--output is required")
 			}
-			if err := r.LocalCore.Backup(target, output); err != nil {
+			if err := r.CoreState.Backup(target, output); err != nil {
 				return fail(stderr, application.ExitTarget, err.Error())
 			}
 			return encode(stdout, map[string]any{"target": target.Name, "backup": output})
@@ -495,7 +536,7 @@ func (r Runner) core(args []string, stdout, stderr io.Writer) int {
 			if !ok || input == "" {
 				return fail(stderr, application.ExitArguments, "--input is required")
 			}
-			if err := r.LocalCore.Restore(target, input); err != nil {
+			if err := r.CoreState.Restore(target, input); err != nil {
 				return fail(stderr, application.ExitTarget, err.Error())
 			}
 			return encode(stdout, map[string]any{"target": target.Name, "restored": target.StatePath})
@@ -593,10 +634,7 @@ func (r Runner) deploy(ctx context.Context, args []string, apply bool, stdout, s
 }
 
 func (r Runner) credentials(ctx context.Context, options commandOptions) (domain.CoreConnection, error) {
-	if options.tokenStdin && options.token != "" {
-		return domain.CoreConnection{}, errors.New("--token and --token-stdin cannot be used together")
-	}
-	connection := domain.CoreConnection{Endpoint: options.endpoint, Token: options.token, CAFile: options.caFile, ClientCertFile: options.clientCertFile, ClientKeyFile: options.clientKeyFile, ServerName: options.serverName}
+	connection := domain.CoreConnection{Endpoint: options.endpoint, CAFile: options.caFile, ClientCertFile: options.clientCertFile, ClientKeyFile: options.clientKeyFile, ServerName: options.serverName}
 	if options.tokenStdin {
 		if r.TokenReader == nil {
 			return domain.CoreConnection{}, errors.New("token stdin is not configured")
@@ -610,12 +648,6 @@ func (r Runner) credentials(ctx context.Context, options commandOptions) (domain
 	if connection.Endpoint == "" {
 		connection.Endpoint = os.Getenv("LIAPOLDUS_TARGET_" + envName(options.target) + "_ENDPOINT")
 	}
-	if connection.Token == "" && r.Credentials != nil {
-		value, err := r.Credentials.Resolve(ctx, "LIAPOLDUS_TARGET_"+envName(options.target)+"_TOKEN")
-		if err == nil {
-			connection.Token = value
-		}
-	}
 	registry := r.registry(options.targets)
 	if registry != nil {
 		item, err := registry.Find(options.target)
@@ -626,11 +658,11 @@ func (r Runner) credentials(ctx context.Context, options commandOptions) (domain
 			if connection.Endpoint == "" {
 				connection.Endpoint = item.Endpoint
 			}
-			if connection.Token == "" && item.TokenEnv != "" {
+			if connection.Token == "" && item.CredentialRef != "" {
 				if r.Credentials == nil {
-					return domain.CoreConnection{}, errors.New("credential provider is not configured")
+					return domain.CoreConnection{}, domain.ErrCredentialStore
 				}
-				connection.Token, err = r.Credentials.Resolve(ctx, item.TokenEnv)
+				connection.Token, err = r.Credentials.Resolve(ctx, item.CredentialRef)
 				if err != nil {
 					return domain.CoreConnection{}, fmt.Errorf("resolve target credential: %w", err)
 				}
@@ -653,17 +685,22 @@ func (r Runner) credentials(ctx context.Context, options commandOptions) (domain
 		return domain.CoreConnection{}, errors.New("--endpoint or target endpoint environment is required")
 	}
 	if connection.Token == "" {
-		return domain.CoreConnection{}, errors.New("--token or target token environment is required")
+		if options.tokenStdin {
+			return domain.CoreConnection{}, errors.New("token stdin did not contain a credential")
+		}
+		return domain.CoreConnection{}, errors.New("target management credential is not configured; run liapoldus credential set --target " + options.target)
 	}
 	return connection, nil
 }
 
 type commandOptions struct {
-	project, revision, target, output, endpoint, token, idempotencyKey, targets string
+	project, revision, target, output, endpoint, idempotencyKey, targets        string
+	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint string
+	service                                                                     string
 	expectedGeneration                                                          *int64
 	approvalEvidence                                                            string
 	caFile, clientCertFile, clientKeyFile, serverName                           string
-	confirm, wait, tokenStdin                                                   bool
+	confirm, wait, tokenStdin, replace                                          bool
 }
 
 func parseOptions(args []string) (commandOptions, error) {
@@ -672,6 +709,10 @@ func parseOptions(args []string) (commandOptions, error) {
 		arg := args[index]
 		if arg == "--confirm" {
 			options.confirm = true
+			continue
+		}
+		if arg == "--replace" {
+			options.replace = true
 			continue
 		}
 		if arg == "--wait" {
@@ -698,8 +739,6 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.output = value
 		case "--endpoint":
 			options.endpoint = value
-		case "--token":
-			options.token = value
 		case "--idempotency-key":
 			options.idempotencyKey = value
 		case "--targets":
@@ -720,6 +759,24 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.clientKeyFile = value
 		case "--server-name":
 			options.serverName = value
+		case "--id":
+			options.id = value
+		case "--version":
+			options.version = value
+		case "--platform":
+			options.platform = value
+		case "--path":
+			options.path = value
+		case "--digest":
+			options.digest = value
+		case "--command":
+			options.command = value
+		case "--control-endpoint":
+			options.controlEndpoint = value
+		case "--peer-endpoint":
+			options.peerEndpoint = value
+		case "--service":
+			options.service = value
 		default:
 			return commandOptions{}, fmt.Errorf("unsupported argument %q", arg)
 		}

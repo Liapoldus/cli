@@ -41,9 +41,20 @@ target endpoint/token и валидный bundle. При отказе Core CLI �
 ненулевой exit code. `--wait` ожидает операции, которые вернул Core в ответе на
 apply.
 
-Для ручного ввода token без попадания в shell history/process arguments можно
-использовать `--token-stdin`; CLI читает максимум 4 KiB и удаляет окружающие
-пробелы. В CI предпочтителен target `tokenEnv` через credential provider.
+Для ручного разового CI-вызова token можно передать через `--token-stdin`; CLI
+читает максимум 4 KiB и удаляет окружающие пробелы. Для desktop target
+используйте системный credential vault:
+
+```bash
+liapoldus credential status --target local
+liapoldus credential set --target local       # скрытый интерактивный ввод
+liapoldus credential set --target local --replace
+liapoldus credential remove --target local --confirm
+```
+
+Raw `--token` и `tokenEnv` не поддерживаются. Studio может запросить только
+безопасный status и никогда не получает token. В CI token остаётся ephemeral
+secret и передаётся через stdin, а не сохраняется в desktop vault.
 
 ## Targets и connections
 
@@ -68,9 +79,10 @@ project-relative путь к CLI/Core report формата `studio-reports/v1`.
 размер, затем публикует его relative path и SHA-256 для Studio; он не
 подключается к Core и не копирует raw payload в UI.
 
-Credentials выбираются
-по reference из environment/CI secret provider; интеграция с OS credential
-store остаётся production-ready задачей.
+Target credential reference разрешается в системном credential vault. На
+macOS, Windows и Linux используются соответственно Keychain, Credential
+Manager и Secret Service; если platform vault недоступен, CLI не переходит к
+plaintext file/environment fallback.
 
 Для HTTPS/mTLS можно передать `--ca-file`, `--client-cert`, `--client-key` и
 `--server-name`; обычно эти значения хранятся в target registry, а не в каждом
@@ -81,10 +93,19 @@ JSON evidence с `repository`, exact `revision`, `target`, `approved: true`,
 `source` и `evidenceId`. `--confirm` подтверждает только локальное намерение и
 не заменяет remote approval.
 
-При `core start` local target adapter передаёт Core `CORE_SQLITE_PATH` и
-одноразовые secure bootstrap references; Core сам создаёт initial settings
-revision. Для remote target CLI не получает доступ к SQLite и использует
-API/execution adapter.
+`core start/stop/restart/status/logs` управляют Docker-контейнером
+`liapoldus-core`; host-процесс Core не запускается. Core и runtime plugins
+подключаются к одной target network. Management API опубликован только на
+`127.0.0.1`, Plugin SDK control/peer endpoints доступны только внутри network.
+
+При первом `core start` local target CLI создаёт и сохраняет случайный
+management token в системном vault. Он передаётся Core через одноразовый файл с
+правами `0600` в приватном bind mount: token не попадает в Docker environment,
+аргументы или `docker inspect`. Core удаляет файл до открытия API и хранит
+только verifier. Повторный запуск не меняет активный verifier; остаточный
+bootstrap path очищается. Если credential отсутствует, нужно восстановить
+исходный token или выбрать новый state path; CLI никогда не удаляет существующее
+состояние.
 
 ## Дополнительные команды диагностики
 
@@ -136,3 +157,61 @@ Plain command output is carried only as a JSON `payload`; human-readable stderr
 is replaced with a generic diagnostic so target paths, credentials and internal
 details do not cross the Studio boundary. The flag is intended for the typed
 Studio adapter and is stripped before normal command dispatch.
+
+## Binary-only plugin runtime
+
+Studio и CLI не собирают plugin binaries и Docker images. Binary регистрируется
+во внешнем CLI-owned registry, а Project хранит только logical artifact
+reference в `services/<id>/service.yaml`. Версия, платформа и digest должны
+совпасть с одной записью registry побайтно; CLI не выбирает «последнюю» версию
+по ID и не подменяет отсутствующую ссылку.
+
+```yaml
+id: server
+version: 1.1.0
+artifact:
+  id: server
+  version: 1.1.0
+  platform: linux/arm64
+  digest: sha256:<64 lowercase hex characters>
+runtime:
+  command: server
+  controlEndpoint: https://server:9443
+  peerEndpoint: https://server:9643
+```
+
+Пути binary, trust state, credentials и Docker socket в Project не записываются.
+Старый `service.yaml` без этой ссылки отклоняется; совместимого fallback нет.
+Перед запуском можно получить разрешённый и проверенный plan:
+
+```bash
+liapoldus runtime plan --project ./project --revision HEAD --target local
+```
+
+Затем binary регистрируется во внешнем CLI-owned registry:
+
+```bash
+liapoldus plugin artifact register --id server --version 1.0.0 \
+  --platform linux/arm64 --path /opt/liapoldus/bin/server
+liapoldus plugin artifact trust --id server --version 1.0.0 \
+  --platform linux/arm64 --digest sha256:...
+liapoldus plugin artifact list
+liapoldus runtime start --project ./project --revision HEAD --target local
+```
+
+`runtime start` поднимает Core и все выбранные готовые plugin binaries в Docker;
+используется только заранее установленный runtime image. `docker build` и
+Docker Compose для этого workflow не вызываются. Бинарники копируются в
+OS-cache staging directory на срок жизни runtime и удаляются при `runtime stop`.
+Внутренние plugin REST endpoints не публикуются на host; наружу открывается
+только настроенный public endpoint Server на loopback.
+
+После запуска plugin metadata читается только Core. Команды ниже являются
+Core-backed Management API reads и не обращаются к Plugin SDK REST напрямую:
+
+```bash
+liapoldus plugin inspect server --target local
+liapoldus plugin manifest server --target local
+liapoldus plugin schema server --target local
+liapoldus plugin status server --target local
+```

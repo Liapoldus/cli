@@ -43,13 +43,13 @@ func TestApplyUsesRequestedGitRevision(t *testing.T) {
 	defer server.Close()
 
 	var output bytes.Buffer
-	runner := Runner{Source: git.Repository{}, CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) {
+	runner := Runner{Source: git.Repository{}, TokenReader: strings.NewReader("secret"), CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) {
 		return coreapi.New(connection)
 	}}
 	code := runner.Run([]string{
 		"apply", "--project", project, "--revision", first, "--target", "production",
 		"--expected-generation", "41",
-		"--endpoint", server.URL, "--token", "secret", "--confirm",
+		"--endpoint", server.URL, "--token-stdin", "--confirm",
 	}, &output, &output)
 	if code != 0 {
 		t.Fatalf("code=%d output=%s", code, output.String())
@@ -91,12 +91,12 @@ func TestApplyRequiresConfirmationAndCleanTree(t *testing.T) {
 	runRunnerGit(t, project, "add", ".")
 	runRunnerGit(t, project, "commit", "-m", "initial")
 	var output bytes.Buffer
-	runner := Runner{Source: git.Repository{}, CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) {
+	runner := Runner{Source: git.Repository{}, TokenReader: strings.NewReader("secret"), CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) {
 		return coreapi.New(connection)
 	}}
 	code := runner.Run([]string{
 		"apply", "--project", project, "--revision", "HEAD", "--target", "production",
-		"--endpoint", "http://127.0.0.1:1", "--token", "secret",
+		"--endpoint", "http://127.0.0.1:1", "--token-stdin",
 	}, &output, &output)
 	if code != application.ExitArguments || !strings.Contains(output.String(), "--confirm") {
 		t.Fatalf("code=%d output=%s", code, output.String())
@@ -105,7 +105,7 @@ func TestApplyRequiresConfirmationAndCleanTree(t *testing.T) {
 	output.Reset()
 	code = runner.Run([]string{
 		"apply", "--project", project, "--revision", "HEAD", "--target", "production",
-		"--endpoint", "http://127.0.0.1:1", "--token", "secret", "--confirm",
+		"--endpoint", "http://127.0.0.1:1", "--token-stdin", "--confirm",
 	}, &output, &output)
 	if code != application.ExitRevision || !strings.Contains(output.String(), "clean") {
 		t.Fatalf("code=%d output=%s", code, output.String())
@@ -133,13 +133,14 @@ func TestRemoteRequiredTargetRejectsApplyWithoutApprovalEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := Runner{
-		Source:   git.Repository{},
-		Registry: targets.Registry{Path: registryPath},
+		Source:      git.Repository{},
+		TokenReader: strings.NewReader("secret"),
+		Registry:    targets.Registry{Path: registryPath},
 		CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) {
 			return coreapi.New(connection)
 		},
 	}
-	args := []string{"apply", "--project", project, "--revision", revision, "--target", "production", "--token", "secret", "--confirm"}
+	args := []string{"apply", "--project", project, "--revision", revision, "--target", "production", "--token-stdin", "--confirm"}
 	var output bytes.Buffer
 	if code := runner.Run(args, &output, &output); code != application.ExitRevision || !strings.Contains(output.String(), "approval-evidence") {
 		t.Fatalf("code=%d output=%s", code, output.String())
@@ -163,7 +164,11 @@ func TestRemoteRequiredTargetRejectsApplyWithoutApprovalEvidence(t *testing.T) {
 
 func TestRunnerResolvesTargetTokenThroughCredentialProvider(t *testing.T) {
 	registryPath := filepath.Join(t.TempDir(), "targets.json")
-	if err := os.WriteFile(registryPath, []byte(`{"targets":[{"name":"production","transport":"remote-api","endpoint":"http://core.example","tokenEnv":"CORE_TOKEN"}]}`), 0o600); err != nil {
+	profile, err := json.Marshal(map[string]any{"targets": []domain.Target{{Name: "production", Transport: domain.TransportRemoteAPI, Endpoint: "http://core.example", CredentialRef: domain.ManagementCredentialReference("production")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryPath, profile, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runner := Runner{
@@ -225,8 +230,15 @@ func TestStudioEventsModeEmitsVersionedJSONLAndHidesPlainErrors(t *testing.T) {
 	if code := runner.Run([]string{"unsupported", studioEventsFlag}, &output, &output); code != application.ExitArguments {
 		t.Fatalf("unsupported code=%d output=%s", code, output.String())
 	}
-	if strings.Contains(output.String(), "unsupported command") || !strings.Contains(output.String(), `"type":"diagnostic"`) || !strings.Contains(output.String(), `"type":"run.failed"`) {
-		t.Fatalf("plain error leaked or terminal event missing: %s", output.String())
+	if !strings.Contains(output.String(), "unsupported command") || !strings.Contains(output.String(), `"type":"diagnostic"`) || !strings.Contains(output.String(), `"type":"run.failed"`) {
+		t.Fatalf("actionable diagnostic or terminal event missing: %s", output.String())
+	}
+}
+
+func TestStudioDiagnosticRedactsCredentialValuesAndBoundsMessage(t *testing.T) {
+	message := safeStudioDiagnostic("Core status: token=top-secret; " + strings.Repeat("x", 600))
+	if strings.Contains(message, "top-secret") || len(message) > 512+len("…") {
+		t.Fatalf("unsafe diagnostic: %q", message)
 	}
 }
 
@@ -245,16 +257,43 @@ func TestStudioEventWriterPreservesReportAndOperationMetadata(t *testing.T) {
 	}
 }
 
-func TestCoreRestartUsesBoundedLocalLifecycle(t *testing.T) {
-	registry := targetRegistryStub{target: domain.Target{Name: "local", Transport: domain.TransportLocalProcess}}
-	lifecycle := &localCoreStub{}
+func TestStudioEventWriterSurfacesRedactedPlainLogOutput(t *testing.T) {
 	var output bytes.Buffer
-	runner := Runner{Registry: registry, LocalCore: lifecycle}
+	writer := &studioEventWriter{output: &output, runID: "run-logs", kind: "stdout"}
+	if _, err := writer.Write([]byte("core ready; token=do-not-leak\n")); err != nil {
+		t.Fatal(err)
+	}
+	var event studioEvent
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "run.output" || bytes.Contains(event.Payload, []byte("do-not-leak")) || !bytes.Contains(event.Payload, []byte("[redacted]")) {
+		t.Fatalf("plain log output was not safely surfaced: %+v", event)
+	}
+}
+
+func TestStudioEventWriterRedactsBearerAndPrivateKeyLogLines(t *testing.T) {
+	if got := safeStudioDiagnostic("Authorization: Bearer do-not-leak"); strings.Contains(got, "do-not-leak") {
+		t.Fatalf("bearer credential leaked: %q", got)
+	}
+	if got := safeStudioDiagnostic("-----BEGIN PRIVATE KEY-----"); strings.Contains(got, "PRIVATE KEY") {
+		t.Fatalf("private key marker leaked: %q", got)
+	}
+}
+
+func TestCoreRestartUsesDockerLifecycle(t *testing.T) {
+	target, _ := dockerCoreTestTarget(t, false)
+	registry := targetRegistryStub{target: target}
+	docker := &dockerRuntimeStub{}
+	vault := &memoryCredentialVault{values: make(map[string]string)}
+	var output bytes.Buffer
+	runner := Runner{Registry: registry, Docker: docker, Credentials: vault, CredentialVault: vault,
+		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return healthyCoreClient{}, nil }}
 	if code := runner.Run([]string{"core", "restart", "--target", "local"}, &output, &output); code != application.ExitOK {
 		t.Fatalf("code=%d output=%s", code, output.String())
 	}
-	if strings.Join(lifecycle.calls, ",") != "stop,start" || !strings.Contains(output.String(), `"restarted":true`) {
-		t.Fatalf("calls=%v output=%s", lifecycle.calls, output.String())
+	if docker.runCount != 1 || !strings.Contains(output.String(), `"restarted":true`) {
+		t.Fatalf("Docker runs=%d output=%s", docker.runCount, output.String())
 	}
 }
 
@@ -274,25 +313,6 @@ func (s targetRegistryStub) Find(name string) (domain.Target, error) {
 	return s.target, nil
 }
 func (targetRegistryStub) Add(domain.Target) error { return nil }
-
-type localCoreStub struct {
-	calls []string
-}
-
-func (s *localCoreStub) Start(domain.Target) (map[string]any, error) {
-	s.calls = append(s.calls, "start")
-	return map[string]any{"state": "running"}, nil
-}
-func (s *localCoreStub) Stop(domain.Target) (map[string]any, error) {
-	s.calls = append(s.calls, "stop")
-	return map[string]any{"state": "stopped"}, nil
-}
-func (*localCoreStub) Status(domain.Target) (domain.LocalCoreStatus, error) {
-	return domain.LocalCoreStatus{}, nil
-}
-func (*localCoreStub) Logs(domain.Target) ([]byte, error)  { return nil, nil }
-func (*localCoreStub) Backup(domain.Target, string) error  { return nil }
-func (*localCoreStub) Restore(domain.Target, string) error { return nil }
 
 func (s credentialProviderStub) Resolve(context.Context, string) (string, error) {
 	return s.value, nil

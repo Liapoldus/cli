@@ -1,23 +1,45 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 )
 
 var (
 	ErrInvalidRevision     = errors.New("revision is not a Git commit")
 	ErrDirtyWorkingTree    = errors.New("working tree is not clean")
 	ErrTargetNotConfigured = errors.New("target is not configured")
+	ErrCredentialNotFound  = errors.New("target management credential is not configured")
+	ErrCredentialStore     = errors.New("operating-system credential store is unavailable")
 )
 
 type CoreHTTPError struct {
 	Operation string
 	Status    int
+	Code      string
+	Detail    string
 }
 
 func (e CoreHTTPError) Error() string {
-	return "core " + e.Operation + " returned HTTP " + strconv.Itoa(e.Status)
+	message := "core " + e.Operation + " returned HTTP " + strconv.Itoa(e.Status)
+	if strings.TrimSpace(e.Code) != "" {
+		message += " [" + e.Code + "]"
+	}
+	if strings.TrimSpace(e.Detail) != "" {
+		message += ": " + e.Detail
+	}
+	return message
+}
+
+func NewCoreHTTPError(operation string, status int, body []byte) CoreHTTPError {
+	var problem struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	}
+	_ = json.Unmarshal(body, &problem)
+	return CoreHTTPError{Operation: operation, Status: status, Code: problem.Code, Detail: problem.Detail}
 }
 
 type CoreContractError struct {

@@ -11,6 +11,7 @@ type ProjectSource interface {
 	WorkingTreeStatus(ctx context.Context, projectPath string) (string, error)
 	RemoteOrigin(ctx context.Context, projectPath string) (string, error)
 	Files(ctx context.Context, projectPath, revision string) ([]File, error)
+	RuntimeArtifacts(ctx context.Context, projectPath, revision string) ([]ArtifactReference, error)
 	ServiceSettings(ctx context.Context, projectPath, revision string) ([]Service, error)
 	Links(ctx context.Context, projectPath, revision string) ([]json.RawMessage, error)
 	ProjectID(ctx context.Context, projectPath, revision string) (string, error)
@@ -23,12 +24,23 @@ type CredentialProvider interface {
 	Resolve(ctx context.Context, reference string) (string, error)
 }
 
+// CredentialVault is the CLI-owned local secret store. Implementations must
+// use the operating-system vault and fail closed when it is unavailable.
+type CredentialVault interface {
+	CredentialProvider
+	Store(ctx context.Context, reference, value string) error
+	Delete(ctx context.Context, reference string) error
+}
+
 // CoreClient is the narrow Management API port used by the application layer.
 type CoreClient interface {
 	Health(ctx context.Context) (int, error)
 	Plan(ctx context.Context, request ConfigBundleRequest) (PlanResponse, error)
 	Apply(ctx context.Context, request ConfigBundleRequest, idempotencyKey string) (ApplyResponse, error)
 	Operation(ctx context.Context, operationID string) (OperationResponse, error)
+	PluginMetadata(ctx context.Context, pluginID, view string) (json.RawMessage, error)
+	RegisterPlugin(ctx context.Context, metadata PluginRegistrationMetadata) (json.RawMessage, error)
+	EnsurePluginLink(ctx context.Context, policy PluginLinkPolicyRequest, idempotencyKey string) (json.RawMessage, error)
 }
 
 type CoreConnection struct {
@@ -60,21 +72,9 @@ type TargetRegistry interface {
 	Add(target Target) error
 }
 
-type LocalCore interface {
-	Start(target Target) (map[string]any, error)
-	Stop(target Target) (map[string]any, error)
-	Status(target Target) (LocalCoreStatus, error)
-	Logs(target Target) ([]byte, error)
+type CoreStateFiles interface {
 	Backup(target Target, output string) error
 	Restore(target Target, input string) error
-}
-
-type LocalCoreStatus struct {
-	Target    string `json:"target"`
-	Running   bool   `json:"running"`
-	PID       int    `json:"pid"`
-	Endpoint  string `json:"endpoint,omitempty"`
-	Reachable *bool  `json:"reachable,omitempty"`
 }
 
 // ConfigBundleRequest is the wire-neutral request assembled by the application.

@@ -19,6 +19,9 @@ func (sourceStub) RemoteOrigin(context.Context, string) (string, error)      { r
 func (sourceStub) Files(context.Context, string, string) ([]domain.File, error) {
 	return []domain.File{{Path: "project.yaml", Digest: "sha256:" + strings.Repeat("a", 64), Bytes: 1}}, nil
 }
+func (sourceStub) RuntimeArtifacts(context.Context, string, string) ([]domain.ArtifactReference, error) {
+	return nil, nil
+}
 func (sourceStub) ServiceSettings(context.Context, string, string) ([]domain.Service, error) {
 	return nil, nil
 }

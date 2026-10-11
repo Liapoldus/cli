@@ -52,6 +52,12 @@ func (r Registry) List() ([]domain.Target, error) {
 		if value.Targets[index].Name == "" {
 			return nil, errors.New("target name is required")
 		}
+		credentialReference := domain.ManagementCredentialReference(value.Targets[index].Name)
+		if value.Targets[index].CredentialRef == "" {
+			value.Targets[index].CredentialRef = credentialReference
+		} else if value.Targets[index].CredentialRef != credentialReference {
+			return nil, fmt.Errorf("target %q has an invalid credential reference", value.Targets[index].Name)
+		}
 		if _, ok := seen[value.Targets[index].Name]; ok {
 			return nil, fmt.Errorf("target %q is declared more than once", value.Targets[index].Name)
 		}
@@ -72,6 +78,7 @@ func (r Registry) List() ([]domain.Target, error) {
 		value.Targets[index].StatePath = resolvePath(base, value.Targets[index].StatePath)
 		value.Targets[index].PIDPath = resolvePath(base, value.Targets[index].PIDPath)
 		value.Targets[index].LogPath = resolvePath(base, value.Targets[index].LogPath)
+		value.Targets[index].Runtime.TLSDirectory = resolvePath(base, value.Targets[index].Runtime.TLSDirectory)
 		value.Targets[index].CAFile = resolvePath(base, value.Targets[index].CAFile)
 		value.Targets[index].ClientCertFile = resolvePath(base, value.Targets[index].ClientCertFile)
 		value.Targets[index].ClientKeyFile = resolvePath(base, value.Targets[index].ClientKeyFile)
@@ -100,6 +107,11 @@ func (r Registry) Add(target domain.Target) error {
 	if target.Name == "" {
 		return errors.New("target name is required")
 	}
+	credentialReference := domain.ManagementCredentialReference(target.Name)
+	if target.CredentialRef != "" && target.CredentialRef != credentialReference {
+		return fmt.Errorf("target %q has an invalid credential reference", target.Name)
+	}
+	target.CredentialRef = credentialReference
 	if !validTransport(target.Transport) {
 		return fmt.Errorf("target %q has unsupported transport %q", target.Name, target.Transport)
 	}
@@ -116,12 +128,20 @@ func (r Registry) Add(target domain.Target) error {
 	if err != nil {
 		return err
 	}
-	for _, item := range items {
+	replaced := false
+	for index, item := range items {
 		if item.Name == target.Name {
-			return fmt.Errorf("target %q already exists", target.Name)
+			// Target registration is an explicit Studio action. Re-registering
+			// the same name updates the profile atomically, which is required
+			// when local Core certificates, ports, or runtime settings change.
+			items[index] = target
+			replaced = true
+			break
 		}
 	}
-	items = append(items, target)
+	if !replaced {
+		items = append(items, target)
+	}
 	data, err := json.MarshalIndent(file{Targets: items}, "", "  ")
 	if err != nil {
 		return err

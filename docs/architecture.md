@@ -11,7 +11,7 @@ flowchart LR
     P --> V["Validator + bundle builder"]
     V --> T["Target adapter"]
     T --> API["Core Management API"]
-    T --> LC["Local Core process"]
+    T --> LC["Docker-managed local Core"]
     API --> DB["Core SQLite"]
     API --> R["Core replicas"]
     S["Liapoldus Studio"] --> G
@@ -35,7 +35,7 @@ CLI владеет операционным workflow вокруг Core:
 - plan/diff;
 - отправка bundle;
 - polling operation и безопасный exit code;
-- локальный Core lifecycle и поддержанные remote execution adapters.
+- локальный Docker lifecycle Core и уже собранных plugin binaries.
 
 CLI не является вторым редактором проекта. Он не изменяет source files и не
 выполняет Git commit за пользователя.
@@ -54,11 +54,15 @@ Presentation не вызывает Git, HTTP или process APIs напряму�
 зависит только от domain ports. Infrastructure не содержит deployment policy;
 она предоставляет адаптеры, которые собираются в `cmd/liapoldus`.
 
-Credential references разрешаются отдельным `CredentialProvider`. Текущий
-composition root подключает environment provider для CI/secret variables;
-desktop keychain или другой secret manager может быть подключён тем же портом,
-не меняя application policy. Значения credentials не попадают в target JSON,
-bundle, logs или reports.
+Credential references разрешаются отдельным `CredentialProvider`; desktop
+composition root использует fail-closed OS credential vault adapter. Токены
+target-scoped и не хранятся в target JSON, bundle, logs или reports. Команда
+`credential set` принимает значение только через скрытый TTY prompt; Studio
+получает только состояние записи. CI передаёт одноразовый токен через stdin.
+Для нового local Core CLI генерирует token, сохраняет его в vault и передаёт
+в Docker через одноразовый файл 0600 в приватном bind mount. Token не попадает
+в Docker environment или inspect metadata; Core удаляет файл до открытия API и
+сохраняет verifier.
 
 ### Core
 
@@ -73,11 +77,12 @@ Core владеет runtime control plane и SQLite:
 Core не содержит пользовательского CLI, Git client, Git credentials, project
 resolver или deployment-provider integration.
 
-При первом запуске local target adapter CLI передаёт Core `CORE_SQLITE_PATH` и
-secure bootstrap references; Core создаёт initial settings state до открытия
-API. CLI не импортирует внутренние Core packages и не открывает SQLite; remote
-targets работают только через Management API или явно установленный execution
-adapter.
+При первом запуске local target adapter CLI запускает Core container, передаёт
+ему `CORE_SQLITE_PATH` и secure bootstrap references; Core создаёт initial
+settings state до открытия API. Management API публикуется только на loopback,
+а Plugin SDK control endpoint остаётся внутри временной Docker network. CLI не
+импортирует внутренние Core packages и не открывает SQLite; remote targets
+работают только через Management API или явно установленный execution adapter.
 
 ## 2. Источники истины
 
@@ -135,3 +140,29 @@ transport (`ssh`, managed agent или другой утверждённый exe
 
 Core сохраняет единственный runtime composition root и Management API. CLI
 собирается и релизится независимо.
+
+## 6. Runtime control-plane boundary
+
+Для локальной plugin отладки действует строго типизированный путь:
+
+```text
+Studio → CLI → Core Management API → Plugin SDK REST API
+```
+
+CLI запускает Core и plugin containers в одной Docker network, управляет
+staging и контейнерами, но не является Plugin SDK client. Он передаёт Core
+только artifact ID/version/digest,
+instance/replica IDs, control/peer endpoints и runtime status. Live manifest,
+config schema, identity, readiness и configuration generations получает и
+применяет Core.
+
+Каждый Project service закрепляет `artifact.id`, `artifact.version`,
+`artifact.platform` и `artifact.digest` в `service.yaml`; runtime plan требует
+точное совпадение с CLI-owned artifact registry. Версия не выбирается по
+порядку строк или «самой новой» записи, а смена binary требует явного изменения
+Project reference. Runtime command и private service endpoints также берутся
+из этого manifest и валидируются до создания Docker network.
+
+Прямые CLI-вызовы plugin `/manifest`, `/config-schema`, `/identity`, `/ready` и
+`/reload` запрещены. Data plane не меняется: plugin вызывает другой plugin
+напрямую через `pluginprotocol`; Core и CLI business traffic не проксируют.

@@ -37,8 +37,9 @@ hardening. Локальные release artifacts и credentials boundary уже �
   `doctor`, expected-generation и version output;
 - добавлены Makefile, CI quality gates, race/vet/staticcheck checks и GoReleaser
   cross-platform configuration.
-- добавлены `CredentialProvider`, `--token-stdin`, pinned GitHub Actions и
-  Core mTLS lifecycle smoke workflow;
+- добавлены OS credential vault (`Keychain`/`Credential Manager`/`Secret
+  Service`), target-scoped references, hidden TTY setup, `--token-stdin`,
+  one-time Core bootstrap и pinned GitHub Actions;
 - GoReleaser `check` и snapshot release с пятью platform binaries, archives и
   checksums успешно выполнены локально.
 
@@ -120,9 +121,8 @@ typed adapter и остановка. Core HTTP surface изолирован ти
 
 1. Набор remote execution adapters и trust model SSH/agent: текущий scope
    ограничен API-only remote target.
-2. Secure provider для desktop и GitHub Actions: `CredentialProvider` boundary
-   и environment/CI adapter реализованы; desktop keychain backend остаётся
-   отдельной implementation choice.
+2. Hosted cross-platform conformance для системного credential vault и
+   bootstrap lifecycle ещё должен пройти на macOS, Windows и Linux runners.
 3. Политика signed commits и provenance attestations.
 4. Гранулярность service-owned schema validation.
 5. Формат cross-repository contract test fixtures и hosted execution.

@@ -31,17 +31,15 @@ jobs:
       - name: Validate
         run: liapoldus validate --project . --revision '${{ inputs.revision }}'
       - name: Plan
-        run: >-
-          liapoldus plan --project . --revision '${{ inputs.revision }}'
-          --target production --targets .liapoldus/targets.json
-          # target profile resolves tokenEnv: CORE_TOKEN through the provider
+        run: |
+          printf '%s' "$CORE_TOKEN" | liapoldus plan --project . --revision '${{ inputs.revision }}' \
+            --target production --targets .liapoldus/targets.json --token-stdin
         env:
           CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
       - name: Apply
-        run: >-
-          liapoldus apply --project . --revision '${{ inputs.revision }}'
-          --target production --targets .liapoldus/targets.json
-          --approval-evidence approval.json
-          --confirm --wait
+        run: |
+          printf '%s' "$CORE_TOKEN" | liapoldus apply --project . --revision '${{ inputs.revision }}' \
+            --target production --targets .liapoldus/targets.json --token-stdin \
+            --approval-evidence approval.json --confirm --wait
         env:
           CORE_TOKEN: ${{ secrets.CORE_TOKEN }}

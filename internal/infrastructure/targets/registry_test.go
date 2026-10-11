@@ -28,11 +28,33 @@ func TestRegistryAddAndResolveRelativePaths(t *testing.T) {
 	if resolved.CAFile != filepath.Join(filepath.Dir(path), "tls", "ca.pem") {
 		t.Fatalf("CA path=%q", resolved.CAFile)
 	}
+	if resolved.CredentialRef != domain.ManagementCredentialReference("local") {
+		t.Fatalf("credential reference=%q", resolved.CredentialRef)
+	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Add(target); err == nil {
-		t.Fatal("expected duplicate target error")
+	target.StatePath = "state/updated.sqlite"
+	if err := registry.Add(target); err != nil {
+		t.Fatal("expected target replacement to succeed:", err)
+	}
+	updated, err := registry.Find("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(updated.StatePath, filepath.Join("state", "updated.sqlite")) {
+		t.Fatalf("replacement state path=%q", updated.StatePath)
+	}
+}
+
+func TestRegistryDoesNotAcceptCredentialReferenceForAnotherTarget(t *testing.T) {
+	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
+	target := domain.Target{
+		Name: "local", Transport: domain.TransportLocalProcess,
+		CredentialRef: domain.ManagementCredentialReference("production"),
+	}
+	if err := registry.Add(target); err == nil || !strings.Contains(err.Error(), "invalid credential reference") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
