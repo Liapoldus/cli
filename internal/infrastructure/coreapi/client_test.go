@@ -504,7 +504,7 @@ func TestClientOperationRejectsMismatchedReplicaAndDuplicateOutcomes(t *testing.
 }
 
 func TestClientServiceMetadataIsCoreBacked(t *testing.T) {
-	manifest := `{"id":"server","configurationUI":{"version":"service-configuration-ui/v1","groups":[{"id":"listener"}]}}`
+	manifest := `{"id":"server","configurationUI":{"version":"service-configuration-ui/v1","groups":[{"id":"listener"}]},"editorButtons":{"version":"service-editor-buttons/v1","buttons":[{"id":"server.endpoints","key":"endpoints","label":{"ru":"Эндпоинты","en":"Endpoints"},"description":{"ru":"Открыть","en":"Open"}}]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/services/server/manifest" || request.Header.Get("Authorization") != "Bearer secret" {
 			t.Fatalf("request=%s auth=%s", request.URL.Path, request.Header.Get("Authorization"))
