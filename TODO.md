@@ -31,13 +31,14 @@
   exact settings digest, generation, and readiness before it calls Core.
 - [ ] Live host preflight on 2026-10-18 found that Studio's selected
   /Users/docup/go/bin/liapoldus is stale: service secret list returns
-  unsupported service command. A current Darwin/arm64 CLI candidate was
-  built at /tmp/liapoldus-cli-2026-10-18, SHA-256
-  556545996aeba3c260a4f17afb91ebb44795b2e0bbe6baf9cc56ba7d2dce1a2f.
+  unsupported service command. The updated Darwin/arm64 candidate includes
+  Project-scoped retirement checks from commit `f60ce65`; it is at
+  /tmp/liapoldus-cli-2026-10-18-f60ce65, SHA-256
+  `3901057bd6a2b279a03a2926eb8bae8648b4163ab1801dfc2a04bd1c563b55e6`.
   It reaches Core's catalog route, which returns HTTP 404 from the currently
-  running Core binary. The candidate is not installed; local secret workflow
-  remains unverified until the updated host CLI and Core are selected through
-  Studio and the full rotation path passes.
+  running Core binary. This exact CLI digest is not installed yet. Secret
+  workflow remains unverified until Studio selects this binary, Core exposes
+  the route, and the full rotation path passes.
 
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
