@@ -55,6 +55,16 @@
   workflow remains unverified until Studio selects this binary, Core exposes
   the route, and the full rotation path passes.
 
+- [ ] Follow-up after the retry-hardening commit: latest published CLI source
+  is `7e7d607` and its Darwin/arm64 candidate is
+  `/tmp/liapoldus-cli-2026-10-18-7e7d607`, SHA-256
+  `606df83422fce3d0b2adbc438e6a57e0424cc39ffc3a4420c43a20179bd78f2a`.
+  This supersedes the `f60ce65` candidate above; it is still not selected or
+  installed. Latest Core source is `d7f82cd`, with an uninstalled Linux/arm64
+  candidate recorded in Core TODO. Live secret catalog and rotation acceptance
+  remain pending exact-digest updates through Studio and user-confirmed plugin
+  trust review.
+
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
 - The earlier `runtime.start` lease failure has been recovered through Studio
