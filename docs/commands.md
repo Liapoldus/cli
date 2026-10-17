@@ -410,3 +410,38 @@ Admin Surface и его digest только от Core, проверяет action
 Успешный `202` возвращает operation reference; результат следует получать
 через `operation get|watch`. Ни содержимое файлов, ни локальные пути не
 включаются в operation/report output.
+
+## Локальные секреты сервисов
+
+Для `local` target CLI предоставляет typed каталог и OS-vault lifecycle:
+
+```bash
+liapoldus service secret list --target local --service server
+liapoldus service secret create --target local --service server \
+  --purpose http.auth.bearer --label "edge token" --confirm
+liapoldus service secret rotate --target local --service server \
+  --reference ssr:v1:<reference> --purpose http.auth.bearer \
+  --label "edge token 2026-10" --confirm
+liapoldus service secret register --target local --service server \
+  --reference ssr:v1:<reference> --confirm
+liapoldus service secret revoke --target local --service server \
+  --reference ssr:v1:<reference> --confirm
+```
+
+`create` и `rotate` принимают значение через скрытый prompt. Studio использует
+host-owned secure stdin; secret value не помещается в argv, stdout/stderr,
+Project или Core metadata. `rotate` сохраняет новую ссылку и значение в
+локальном OS vault, регистрирует только opaque metadata в Core и возвращает
+состояние `staged`. Если регистрация Core не удалась, `list` покажет pending
+registration, а `register` повторит её без повторного ввода значения.
+
+Безопасный порядок ротации: создать новую ссылку, заменить ссылку в Project,
+проверить redacted diff и подтвердить публичные/security-sensitive изменения,
+применить конфигурацию, дождаться готовности всех реплик и подтверждения ими
+точного digest/generation, затем отозвать старую ссылку. Studio проверяет
+сохранённый Project и acknowledgements до вызова `revoke`. При прямом вызове CLI
+оператор обязан вручную убедиться, что Project уже не ссылается на старую
+ссылку и все реплики подтвердили новую конфигурацию. Отзыв требует `--confirm`,
+блокирует дальнейшее redemption в Core и очищает локальное staged-хранилище и
+OS-vault запись. Автоматического планировщика ротации и remote secret backend
+нет; secret operations поддерживаются только для `local`.

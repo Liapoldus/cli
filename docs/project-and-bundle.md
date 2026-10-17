@@ -124,12 +124,19 @@ Project хранит только symbolic secret references. CLI получае
 server-side redemption. Значения не попадают в bundle digest display, logs,
 Git, Core settings JSON или operation report.
 
-Для локального Core доступен typed каталог `liapoldus service secret
-list|create|revoke --target local --service <id>`. Создание принимает значение
-только через скрытый prompt или host-owned secure stdin и сохраняет его в OS
-keyring; Core получает только opaque reference, назначение и label. Отзыв требует
-`--confirm`, сначала блокирует дальнейшие redemption в Core и затем очищает
-локальную keyring запись и staged файл.
+Для локального Core доступен typed lifecycle `liapoldus service secret
+list|create|rotate|register|revoke --target local --service <id>`. Создание и
+ротация принимают значение только через скрытый prompt или host-owned secure
+stdin и сохраняют его в OS keyring; Core получает только opaque reference,
+назначение и label. Если регистрация не прошла, локальная staged-ссылка и
+значение остаются для повторной команды `register`.
+
+При ротации сначала сохраните новую ссылку в Project и примените конфигурацию.
+Studio разрешает отзыв прежней ссылки только после удаления её из сохранённого
+Project и подтверждения всеми репликами точных digest и generation. Прямой CLI
+`revoke` требует `--confirm`; оператор должен проверить эти условия вручную.
+Отзыв блокирует дальнейшие redemption в Core и затем очищает локальную keyring
+запись и staged файл. Автоматической ротации и remote secret backend нет.
 
 ## 7. Reproducibility и rollback
 
