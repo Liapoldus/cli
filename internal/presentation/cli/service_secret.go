@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -137,7 +138,7 @@ func (r Runner) serviceSecret(ctx context.Context, args []string, stdout, stderr
 	case "register":
 		return r.registerStagedServiceSecret(ctx, target, secretClient, options, stdout, stderr)
 	case "revoke":
-		return r.revokeServiceSecret(ctx, target, secretClient, options, stdout, stderr)
+		return r.revokeServiceSecret(ctx, target, client, options, stdout, stderr)
 	default:
 		return fail(stderr, application.ExitArguments, "unsupported service secret operation")
 	}
@@ -302,9 +303,30 @@ func (r Runner) createServiceSecretValue(ctx context.Context, target domain.Targ
 	return created, nil
 }
 
-func (r Runner) revokeServiceSecret(ctx context.Context, target domain.Target, client domain.ServiceSecretReferenceClient, options commandOptions, stdout, stderr io.Writer) int {
+func (r Runner) revokeServiceSecret(ctx context.Context, target domain.Target, core domain.CoreClient, options commandOptions, stdout, stderr io.Writer) int {
 	if !options.confirm || !validServiceSecretReference(options.reference) || options.purpose != "" || options.label != "" || options.secretStdin || options.tokenStdin || options.endpoint != "" || options.replace {
 		return fail(stderr, application.ExitArguments, "service secret revoke requires --reference and --confirm")
+	}
+	client, ok := core.(domain.ServiceSecretReferenceClient)
+	if !ok {
+		return fail(stderr, application.ExitTarget, "Core client does not support typed service secret references")
+	}
+	items, err := client.ListServiceSecretReferences(ctx, options.service, "")
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	active := false
+	for _, item := range items {
+		if item.Reference == options.reference && item.ServiceID == options.service && item.State == "active" && item.Validate() {
+			active = true
+			break
+		}
+	}
+	if !active {
+		return fail(stderr, application.ExitArguments, "service secret reference is not active for this service")
+	}
+	if err := r.verifyServiceSecretRetirement(ctx, options.project, options.service, options.reference, core); err != nil {
+		return fail(stderr, application.ExitValidation, err.Error())
 	}
 	if err := client.RevokeServiceSecretReference(ctx, options.service, options.reference); err != nil {
 		return fail(stderr, application.ExitTarget, err.Error())
@@ -324,6 +346,136 @@ func (r Runner) revokeServiceSecret(ctx context.Context, target domain.Target, c
 		return fail(stderr, application.ExitTarget, "Core revoked the secret, but OS vault cleanup failed")
 	}
 	return encode(stdout, map[string]any{"schemaVersion": "service-secret-revoke-result/v1", "target": target.Name, "serviceId": options.service, "reference": options.reference, "state": "revoked"})
+}
+
+type serviceSecretStatusReader interface {
+	ServiceMetadata(ctx context.Context, serviceID, view string) (json.RawMessage, error)
+}
+
+// verifyServiceSecretRetirement proves that the exact Project configuration
+// without the reference is acknowledged by every ready Core-reported replica.
+func (r Runner) verifyServiceSecretRetirement(ctx context.Context, projectPath, serviceID, reference string, statusReader serviceSecretStatusReader) error {
+	if r.Source == nil || r.Snapshots == nil || statusReader == nil || projectPath == "" || serviceID == "" || !validServiceSecretReference(reference) {
+		return errors.New("cannot verify the Project and Core rollout before revoking this secret")
+	}
+	snapshot, err := r.Snapshots.Capture(ctx, projectPath)
+	if err != nil {
+		return errors.New("cannot capture the current Project safely; the secret was not revoked")
+	}
+	defer snapshot.Close()
+	services, err := r.Source.ServiceSettings(ctx, snapshot.RootPath(), domain.WorkingTreeRevision)
+	if err != nil {
+		return errors.New("cannot read the current Project service settings; the secret was not revoked")
+	}
+	var settings json.RawMessage
+	for _, service := range services {
+		if service.ID == serviceID {
+			settings = append(json.RawMessage(nil), service.Settings...)
+			break
+		}
+	}
+	if len(settings) == 0 || !json.Valid(settings) {
+		return errors.New("the current Project service settings are unavailable; the secret was not revoked")
+	}
+	var document any
+	if json.Unmarshal(settings, &document) != nil || jsonContainsSecretReference(document, reference) {
+		return errors.New("the Project configuration still uses this secret reference; the secret was not revoked")
+	}
+	encoded, err := json.Marshal(json.RawMessage(settings))
+	if err != nil {
+		return errors.New("the Project configuration digest could not be verified; the secret was not revoked")
+	}
+	digest := sha256.Sum256(encoded)
+	status, err := statusReader.ServiceMetadata(ctx, serviceID, "status")
+	if err != nil || !serviceStatusAcknowledgesConfigurationDigest(status, serviceID, hex.EncodeToString(digest[:])) {
+		return errors.New("every service replica must be ready and acknowledge the exact Project configuration before revoking this secret")
+	}
+	return nil
+}
+
+func jsonContainsSecretReference(value any, target string) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == target
+	case []any:
+		for _, child := range typed {
+			if jsonContainsSecretReference(child, target) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, child := range typed {
+			if jsonContainsSecretReference(child, target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func serviceStatusAcknowledgesConfigurationDigest(payload json.RawMessage, serviceID, expectedDigest string) bool {
+	if len(payload) == 0 || len(payload) > 1<<20 || serviceID == "" || len(expectedDigest) != 64 {
+		return false
+	}
+	var status struct {
+		InstanceID string `json:"instanceId"`
+		Replicas   []struct {
+			ReplicaID       string `json:"replicaId"`
+			ArtifactVersion string `json:"artifactVersion"`
+			ArtifactDigest  string `json:"artifactDigest"`
+			Ready           *bool  `json:"ready"`
+			Identity        struct {
+				InstanceID string `json:"instanceId"`
+				ReplicaID  string `json:"replicaId"`
+			} `json:"identity"`
+			Readiness struct {
+				InstanceID        string `json:"instanceId"`
+				ReplicaID         string `json:"replicaId"`
+				Generation        string `json:"generation"`
+				PendingGeneration string `json:"pendingGeneration"`
+				SchemaVersion     string `json:"schemaVersion"`
+				SHA256            string `json:"sha256"`
+				Ready             bool   `json:"ready"`
+			} `json:"readiness"`
+			Configuration struct {
+				DesiredGeneration *int64 `json:"desiredGeneration"`
+				AppliedGeneration *int64 `json:"appliedGeneration"`
+				State             string `json:"state"`
+				LastFailureCode   string `json:"lastFailureCode"`
+			} `json:"configuration"`
+		} `json:"replicas"`
+	}
+	if !json.Valid(payload) || json.Unmarshal(payload, &status) != nil || status.InstanceID != serviceID || len(status.Replicas) == 0 || len(status.Replicas) > 4096 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(status.Replicas))
+	for _, replica := range status.Replicas {
+		if replica.ReplicaID == "" || replica.ArtifactVersion == "" || !validArtifactDigest(replica.ArtifactDigest) || replica.Ready == nil || !*replica.Ready ||
+			replica.Identity.InstanceID != serviceID || replica.Identity.ReplicaID != replica.ReplicaID ||
+			replica.Readiness.InstanceID != serviceID || replica.Readiness.ReplicaID != replica.ReplicaID || !replica.Readiness.Ready ||
+			replica.Readiness.Generation == "" || replica.Readiness.PendingGeneration != "" || replica.Readiness.SchemaVersion == "" ||
+			normalizeSecretConfigurationDigest(replica.Readiness.SHA256) != expectedDigest ||
+			replica.Configuration.State != "acknowledged" || replica.Configuration.DesiredGeneration == nil || replica.Configuration.AppliedGeneration == nil ||
+			*replica.Configuration.DesiredGeneration <= 0 || *replica.Configuration.DesiredGeneration != *replica.Configuration.AppliedGeneration || replica.Configuration.LastFailureCode != "" {
+			return false
+		}
+		if _, exists := seen[replica.ReplicaID]; exists {
+			return false
+		}
+		seen[replica.ReplicaID] = struct{}{}
+	}
+	return true
+}
+
+func normalizeSecretConfigurationDigest(value string) string {
+	value = strings.TrimPrefix(value, "sha256:")
+	if len(value) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
 }
 
 func (r Runner) readServiceSecret(options commandOptions) ([]byte, error) {

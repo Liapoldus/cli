@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -92,6 +94,9 @@ func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *tes
 	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
 	root := t.TempDir()
 	useRuntimeCache(t, filepath.Join(root, "cache"))
+	project := filepath.Join(root, "project")
+	settings := []byte(`{"enabled":false}`)
+	writeServiceSecretProject(t, project, settings)
 	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: "", StatePath: filepath.Join(root, "core", "core.sqlite"), Bootstrap: domain.CoreBootstrap{SecretRoot: filepath.Join(root, "core", "secrets")}}
 	secretRoot, err := serviceSecretRoot(target)
 	if err != nil {
@@ -108,18 +113,29 @@ func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *tes
 		t.Fatal(err)
 	}
 	vault := &memoryCredentialVault{values: map[string]string{domain.ServiceSecretCredentialReference("local", "server", reference): "sensitive-marker-value"}}
+	settingsDigest := secretSettingsDigest(t, settings)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodDelete || request.URL.Path != "/api/services/server/secrets/"+reference {
-			t.Fatalf("Core revoke request=%s %s", request.Method, request.URL.Path)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/secrets":
+			_ = json.NewEncoder(response).Encode(map[string]any{"items": []domain.ServiceSecretReference{{
+				Reference: reference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token", State: "active", CreatedAt: "2026-10-17T00:00:00Z",
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/status":
+			_, _ = response.Write(serviceSecretStatus(settingsDigest, true))
+		case request.Method == http.MethodDelete && request.URL.Path == "/api/services/server/secrets/"+reference:
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected Core request=%s %s", request.Method, request.URL.Path)
 		}
-		response.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 	target.Endpoint = server.URL
 	target.CredentialRef = "core-token-ref"
 	var output bytes.Buffer
-	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault, CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) }}
-	args := []string{"service", "secret", "revoke", "--target", "local", "--service", "server", "--reference", reference, "--confirm"}
+	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault,
+		Source: git.Repository{}, Snapshots: git.Snapshotter{},
+		CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) }}
+	args := []string{"service", "secret", "revoke", "--target", "local", "--project", project, "--service", "server", "--reference", reference, "--confirm"}
 	if code := runner.Run(args, &output, &output); code != application.ExitOK {
 		t.Fatalf("revoke failed: code=%d output=%s", code, output.String())
 	}
@@ -132,6 +148,124 @@ func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *tes
 	if strings.Contains(output.String(), "sensitive-marker-value") {
 		t.Fatalf("revoke leaked secret value: %s", output.String())
 	}
+}
+
+func TestServiceSecretRevokeFailsClosedUntilProjectAndAllReplicasAgree(t *testing.T) {
+	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
+	for _, test := range []struct {
+		name                  string
+		settings              []byte
+		statusDigest          string
+		secondReplicaNotReady bool
+	}{
+		{name: "saved Project still references secret", settings: []byte(`{"auth":{"secretRef":"` + reference + `"}}`)},
+		{name: "replica digest differs", settings: []byte(`{"enabled":false}`), statusDigest: strings.Repeat("b", 64)},
+		{name: "one replica has not acknowledged", settings: []byte(`{"enabled":false}`), secondReplicaNotReady: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			useRuntimeCache(t, filepath.Join(root, "cache"))
+			project := filepath.Join(root, "project")
+			writeServiceSecretProject(t, project, test.settings)
+			target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: "", StatePath: filepath.Join(root, "core", "core.sqlite"), CredentialRef: "core-token-ref", Bootstrap: domain.CoreBootstrap{SecretRoot: filepath.Join(root, "core", "secrets")}}
+			secretRoot, err := serviceSecretRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(secretRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := stageServiceSecret(secretRoot, reference, []byte("secret-marker")); err != nil {
+				t.Fatal(err)
+			}
+			if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: reference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token"}); err != nil {
+				t.Fatal(err)
+			}
+			vault := &memoryCredentialVault{values: map[string]string{domain.ServiceSecretCredentialReference("local", "server", reference): "secret-marker"}}
+			coreRevokes, statusReads := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				switch {
+				case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/secrets":
+					_ = json.NewEncoder(response).Encode(map[string]any{"items": []domain.ServiceSecretReference{{
+						Reference: reference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token", State: "active", CreatedAt: "2026-10-17T00:00:00Z",
+					}}})
+				case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/status":
+					statusReads++
+					digest := secretSettingsDigest(t, test.settings)
+					if test.statusDigest != "" {
+						digest = test.statusDigest
+					}
+					_, _ = response.Write(serviceSecretStatus(digest, !test.secondReplicaNotReady))
+				case request.Method == http.MethodDelete:
+					coreRevokes++
+					response.WriteHeader(http.StatusNoContent)
+				default:
+					t.Fatalf("unexpected Core request=%s %s", request.Method, request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			target.Endpoint = server.URL
+			runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault,
+				Source: git.Repository{}, Snapshots: git.Snapshotter{},
+				CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) }}
+			var output bytes.Buffer
+			args := []string{"service", "secret", "revoke", "--target", "local", "--project", project, "--service", "server", "--reference", reference, "--confirm"}
+			if code := runner.Run(args, &output, &output); code == application.ExitOK {
+				t.Fatalf("unsafe revocation succeeded: %s", output.String())
+			}
+			if coreRevokes != 0 {
+				t.Fatalf("Core revoke was called %d times", coreRevokes)
+			}
+			if test.secondReplicaNotReady && statusReads != 1 {
+				t.Fatalf("expected one Core status read, got %d", statusReads)
+			}
+			if _, err := vault.Resolve(context.Background(), domain.ServiceSecretCredentialReference("local", "server", reference)); err != nil {
+				t.Fatalf("failed revocation removed the OS vault value: %v", err)
+			}
+		})
+	}
+}
+
+func writeServiceSecretProject(t *testing.T, root string, settings []byte) {
+	t.Helper()
+	for path, content := range map[string][]byte{
+		"project.yaml":                  []byte("id: secret-retirement-test\n"),
+		"services/server/settings.json": settings,
+	} {
+		fullPath := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func secretSettingsDigest(t *testing.T, settings []byte) string {
+	t.Helper()
+	encoded, err := json.Marshal(json.RawMessage(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func serviceSecretStatus(digest string, secondReplicaReady bool) []byte {
+	configuration := func() map[string]any {
+		return map[string]any{"state": "acknowledged", "desiredGeneration": 7, "appliedGeneration": 7, "lastFailureCode": ""}
+	}
+	replica := func(id string, ready bool) map[string]any {
+		return map[string]any{
+			"replicaId": id, "artifactVersion": "1.2.3", "artifactDigest": "sha256:" + strings.Repeat("a", 64), "ready": ready,
+			"identity":      map[string]any{"instanceId": "server", "replicaId": id},
+			"readiness":     map[string]any{"instanceId": "server", "replicaId": id, "generation": "generation-7", "pendingGeneration": "", "schemaVersion": "service-readiness/v1", "sha256": digest, "ready": ready},
+			"configuration": configuration(),
+		}
+	}
+	encoded, _ := json.Marshal(map[string]any{"instanceId": "server", "replicas": []any{replica("replica-1", true), replica("replica-2", secondReplicaReady)}})
+	return encoded
 }
 
 func TestServiceSecretCreatePreservesStagedValueWhenCoreRejectsMetadataAndCanRetry(t *testing.T) {

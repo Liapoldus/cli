@@ -424,7 +424,7 @@ liapoldus service secret rotate --target local --service server \
   --label "edge token 2026-10" --confirm
 liapoldus service secret register --target local --service server \
   --reference ssr:v1:<reference> --confirm
-liapoldus service secret revoke --target local --service server \
+liapoldus service secret revoke --target local --project . --service server \
   --reference ssr:v1:<reference> --confirm
 ```
 
@@ -438,10 +438,12 @@ registration, а `register` повторит её без повторного в
 Безопасный порядок ротации: создать новую ссылку, заменить ссылку в Project,
 проверить redacted diff и подтвердить публичные/security-sensitive изменения,
 применить конфигурацию, дождаться готовности всех реплик и подтверждения ими
-точного digest/generation, затем отозвать старую ссылку. Studio проверяет
-сохранённый Project и acknowledgements до вызова `revoke`. При прямом вызове CLI
-оператор обязан вручную убедиться, что Project уже не ссылается на старую
-ссылку и все реплики подтвердили новую конфигурацию. Отзыв требует `--confirm`,
-блокирует дальнейшее redemption в Core и очищает локальное staged-хранилище и
+точного digest/generation, затем отозвать старую ссылку. CLI `revoke` создаёт
+безопасный snapshot Project, проверяет, что настройки больше не содержат
+reference, и получает typed status из Core. Отзыв проходит только если все
+реплики готовы и подтверждают точный digest текущей конфигурации; иначе Core
+reference, OS-vault значение и staged-файл остаются нетронутыми. По умолчанию
+`--project` равен текущему каталогу. Отзыв требует `--confirm`, блокирует
+дальнейшее redemption в Core и очищает локальное staged-хранилище и
 OS-vault запись. Автоматического планировщика ротации и remote secret backend
 нет; secret operations поддерживаются только для `local`.

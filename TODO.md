@@ -14,15 +14,21 @@
   `--confirm` and clears local copies only after Core accepts it.
 - [x] Rotation creates a separate reference and records its source reference in
   local metadata. Listing reports staged registration and rotation states;
-  it never revokes the previous secret automatically. Studio verifies that the
-  Project no longer references the old ID and that every required replica is
-  ready on the exact digest and generation before it offers retirement.
+  it never revokes the previous secret automatically. Both Studio and CLI now
+  verify that the saved Project no longer contains the reference and every Core
+  replica is ready on the exact settings digest and applied generation before
+  retirement. CLI snapshots the Project before checking and fails closed on a
+  stale digest, missing ACK, unready replica, or unavailable metadata.
 - [x] Studio provides host-owned secure input and a contextual reference picker.
   Plugin webviews receive only active opaque references and safe metadata; the
   secret value is sent directly to the local CLI over secure stdin.
 - [x] On 2026-10-18, `GOWORK=off make check` and `GOWORK=off make test-race`
   passed. The end-to-end local rotation acknowledgement and crash/restart
   acceptance still require a live Studio/Core runtime and have not been run.
+- [x] Added CLI regressions proving a reference still present in Project,
+  mismatched settings digest, or one unready replica blocks Core revocation and
+  preserves the local vault value. The successful path confirms each replica's
+  exact settings digest, generation, and readiness before it calls Core.
 - [ ] Live host preflight on 2026-10-18 found that Studio's selected
   /Users/docup/go/bin/liapoldus is stale: service secret list returns
   unsupported service command. A current Darwin/arm64 CLI candidate was
