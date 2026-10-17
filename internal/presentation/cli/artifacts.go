@@ -399,11 +399,10 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 			if keepRuntime {
 				return
 			}
-			for _, name := range started {
-				_ = r.Docker.StopContainer(context.Background(), name)
-				_ = r.Docker.RemoveContainer(context.Background(), name)
+			emitRuntimeStartupLogs(context.Background(), stderr, r.Docker, started)
+			if len(started) > 0 {
+				_, _ = fmt.Fprintln(stderr, "runtime_start_incomplete: containers retained for logs/inspect; correct the reported error and retry Run")
 			}
-			_ = r.Docker.NetworkRemove(context.Background(), runtimeNetwork(label))
 		}()
 		coreStart, startCoreErr := r.startDockerCore(ctx, target, label)
 		if startCoreErr != nil {
@@ -414,23 +413,26 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		}
 		for _, service := range plan.Services {
 			artifact := service.Artifact
+			name := "liapoldus-" + artifact.ID
+			if containsRuntimeContainer(existing, name) && !containsRuntimeContainer(cleaned, name) {
+				inspect, inspectErr := r.Docker.Inspect(ctx, name)
+				if inspectErr != nil {
+					return fail(stderr, application.ExitTarget, "could not verify existing service container")
+				}
+				if _, proofErr := serviceArtifactFromContainer(inspect, name, label, target, artifact.ID, artifact.Platform, []domain.Artifact{artifact}); proofErr != nil {
+					return fail(stderr, application.ExitTarget, fmt.Sprintf("service_artifact_update_requires_stop: %s: %v", artifact.ID, proofErr))
+				}
+				continue
+			}
 			staged, stageErr := stageRuntimeArtifact(target, artifact.Path, artifact.ID)
 			if stageErr != nil {
 				return fail(stderr, application.ExitTarget, stageErr.Error())
 			}
 			request, requestErr := runtimeContainerRequest(target, service, staged, runtimeNetwork(label), label)
 			if requestErr != nil {
-				for _, name := range started {
-					_ = r.Docker.StopContainer(ctx, name)
-					_ = r.Docker.RemoveContainer(ctx, name)
-				}
 				return fail(stderr, application.ExitTarget, requestErr.Error())
 			}
 			if err := r.Docker.RunContainer(ctx, request); err != nil {
-				for _, name := range started {
-					_ = r.Docker.StopContainer(ctx, name)
-					_ = r.Docker.RemoveContainer(ctx, name)
-				}
 				return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s: %v", artifact.ID, err))
 			}
 			started = append(started, request.Name)
@@ -463,12 +465,6 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 			// submitting the claim.
 			body, registerErr := registerRuntimeService(ctx, client, metadata, 60*time.Second)
 			if registerErr != nil {
-				emitRuntimeStartupLogs(ctx, stderr, r.Docker, started)
-				for _, name := range started {
-					_ = r.Docker.StopContainer(ctx, name)
-					_ = r.Docker.RemoveContainer(ctx, name)
-				}
-				_ = r.Docker.NetworkRemove(ctx, runtimeNetwork(label))
 				return fail(stderr, application.ExitTarget, fmt.Sprintf("Core registration for %s: %v", artifact.ID, registerErr))
 			}
 			registrations = append(registrations, body)
@@ -629,7 +625,10 @@ func reconcileStoppedRuntimeServices(ctx context.Context, docker domain.DockerPr
 		if err != nil {
 			return nil, err
 		}
-		if state.Running || state.Status == "running" || state.Status == "paused" || state.Status == "restarting" {
+		if state.Running || state.Status == "running" {
+			continue
+		}
+		if state.Status == "paused" || state.Status == "restarting" {
 			return nil, runtimeStartConflict()
 		}
 		if state.Status != "created" && state.Status != "exited" && state.Status != "dead" {
@@ -741,13 +740,13 @@ func (r Runner) startRuntimeService(ctx context.Context, serviceID, container, l
 	if err != nil {
 		return fail(stderr, application.ExitTarget, err.Error())
 	}
-	if state.Running || state.Status == "running" {
+	if (state.Running || state.Status == "running") && (options.project == "" || r.Source == nil) {
 		return r.startExistingRuntimeService(ctx, serviceID, container, label, options, stdout, stderr)
 	}
 	if state.Status == "paused" || state.Status == "restarting" {
 		return fail(stderr, application.ExitTarget, fmt.Sprintf("runtime_exists: service container has state %q and cannot be safely updated", state.Status))
 	}
-	if state.Status != "created" && state.Status != "exited" && state.Status != "dead" {
+	if state.Status != "running" && state.Status != "created" && state.Status != "exited" && state.Status != "dead" {
 		return fail(stderr, application.ExitTarget, fmt.Sprintf("runtime_exists: service container has state %q and cannot be safely updated", state.Status))
 	}
 
@@ -799,7 +798,7 @@ func (r Runner) startRuntimeService(ctx context.Context, serviceID, container, l
 		if listErr != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("read previous service artifact registry: %v", listErr))
 		}
-		previous, inspectErr := previousServiceArtifactFromStoppedContainer(inspect, container, label, target, serviceID, desired.Artifact.Platform, artifacts)
+		previous, inspectErr := serviceArtifactFromContainer(inspect, container, label, target, serviceID, desired.Artifact.Platform, artifacts)
 		if inspectErr != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core has no live status for stopped service and its previous trusted artifact could not be proven: %v", inspectErr))
 		}
@@ -814,7 +813,7 @@ func (r Runner) startRuntimeService(ctx context.Context, serviceID, container, l
 	return r.replaceStoppedRuntimeService(ctx, serviceID, container, label, options, target, *desired, currentVersion, currentDigest, client, stdout, stderr)
 }
 
-func previousServiceArtifactFromStoppedContainer(inspect []byte, container, targetLabel string, target domain.Target, serviceID, platform string, artifacts []domain.Artifact) (domain.Artifact, error) {
+func serviceArtifactFromContainer(inspect []byte, container, targetLabel string, target domain.Target, serviceID, platform string, artifacts []domain.Artifact) (domain.Artifact, error) {
 	var records []struct {
 		Name   string `json:"Name"`
 		Config struct {
@@ -834,8 +833,8 @@ func previousServiceArtifactFromStoppedContainer(inspect []byte, container, targ
 		return domain.Artifact{}, errors.New("Docker inspect response is invalid")
 	}
 	record := records[0]
-	if strings.TrimPrefix(record.Name, "/") != container || record.Config.Labels["com.liapoldus.runtime"] != targetLabel || record.State.Running || (record.State.Status != "exited" && record.State.Status != "created" && record.State.Status != "dead") {
-		return domain.Artifact{}, errors.New("container identity or stopped state does not match the selected target service")
+	if strings.TrimPrefix(record.Name, "/") != container || record.Config.Labels["com.liapoldus.runtime"] != targetLabel || (record.State.Status != "running" && record.State.Status != "exited" && record.State.Status != "created" && record.State.Status != "dead") {
+		return domain.Artifact{}, errors.New("container identity or state does not match the selected target service")
 	}
 	staging, err := runtimeStagingDirectory(target)
 	if err != nil {

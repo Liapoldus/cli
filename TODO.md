@@ -281,3 +281,9 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
   `30421a6e30640ef089322d4a1878c28b7edda8fda8967968148b12e5a63be10b`.
   This includes the earlier Admin Surface digest fix and supersedes candidate
   `8108f74f...` for future Studio review. It has not been selected or run.
+
+
+### Runtime start and configuration apply — 2026-10-17
+
+- `runtime start` now reconciles already-running containers without destroying them, re-registers their current SDK lease, and retains created containers/logs when registration fails. Focused tests, `make check`, and `make test-race` pass; the installed CLI remains the user-approved SHA-256 `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`.
+- The local `Server Echo Studio` target has already recovered through typed CLI and both services reported running; repeated Run accepted Core registration. Final smoke with updated Core/Server/Echo binaries remains pending their exact digest gate. Source commit/push pending.

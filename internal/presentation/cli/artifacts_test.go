@@ -109,6 +109,18 @@ func TestRuntimeStartReconcilesOnlyStoppedKnownServiceContainers(t *testing.T) {
 	}
 }
 
+func TestRuntimeStartKeepsRunningServicesWhileReconcilingStoppedOnes(t *testing.T) {
+	docker := &runtimeReconcileDocker{dockerRuntimeStub: &dockerRuntimeStub{}, states: map[string][]byte{
+		"liapoldus-echo":   []byte(`[{"Name":"/liapoldus-echo","State":{"Status":"running","Running":true}}]`),
+		"liapoldus-server": []byte(`[{"Name":"/liapoldus-server","State":{"Status":"exited","Running":false}}]`),
+	}}
+	plan := domain.RuntimePlan{Services: []domain.RuntimeServiceArtifact{{Artifact: domain.Artifact{ID: "echo"}}, {Artifact: domain.Artifact{ID: "server"}}}}
+	cleaned, err := reconcileStoppedRuntimeServices(context.Background(), docker, []string{"liapoldus-core", "liapoldus-echo", "liapoldus-server"}, plan)
+	if err != nil || !reflect.DeepEqual(cleaned, []string{"liapoldus-server"}) || !reflect.DeepEqual(docker.removed, cleaned) {
+		t.Fatalf("running container was not preserved: cleaned=%v removed=%v err=%v", cleaned, docker.removed, err)
+	}
+}
+
 func TestRuntimeStartDoesNotMutateWhenTargetHasLiveOrUnknownContainers(t *testing.T) {
 	plan := domain.RuntimePlan{Services: []domain.RuntimeServiceArtifact{{Artifact: domain.Artifact{ID: "echo"}}, {Artifact: domain.Artifact{ID: "server"}}}}
 	tests := []struct {
@@ -118,11 +130,11 @@ func TestRuntimeStartDoesNotMutateWhenTargetHasLiveOrUnknownContainers(t *testin
 		wantError string
 	}{
 		{
-			name:     "live service blocks all cleanup",
+			name:     "paused service blocks all cleanup",
 			existing: []string{"liapoldus-echo", "liapoldus-server"},
 			states: map[string][]byte{
 				"liapoldus-echo":   []byte(`[{"Name":"/liapoldus-echo","State":{"Status":"exited"}}]`),
-				"liapoldus-server": []byte(`[{"Name":"/liapoldus-server","State":{"Status":"running","Running":true}}]`),
+				"liapoldus-server": []byte(`[{"Name":"/liapoldus-server","State":{"Status":"paused","Running":false}}]`),
 			},
 			wantError: "runtime_exists",
 		},

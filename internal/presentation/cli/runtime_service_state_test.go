@@ -270,12 +270,12 @@ func TestPreviousArtifactForStoppedServiceComesFromVerifiedReadOnlyMount(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := previousServiceArtifactFromStoppedContainer(inspect, "liapoldus-server", "studio-local", target, "server", "linux/arm64", []domain.Artifact{trusted})
+	got, err := serviceArtifactFromContainer(inspect, "liapoldus-server", "studio-local", target, "server", "linux/arm64", []domain.Artifact{trusted})
 	if err != nil || got.Version != trusted.Version || got.Digest != digest {
 		t.Fatalf("previous artifact = %+v, %v; want verified trusted artifact", got, err)
 	}
 	trusted.Trusted = false
-	if _, err := previousServiceArtifactFromStoppedContainer(inspect, "liapoldus-server", "studio-local", target, "server", "linux/arm64", []domain.Artifact{trusted}); err == nil {
+	if _, err := serviceArtifactFromContainer(inspect, "liapoldus-server", "studio-local", target, "server", "linux/arm64", []domain.Artifact{trusted}); err == nil {
 		t.Fatal("untrusted old artifact was accepted for rollback")
 	}
 }
