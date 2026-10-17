@@ -24,7 +24,10 @@ import (
 
 func (r Runner) service(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return fail(stderr, application.ExitArguments, "service artifact|inspect|manifest|schema|status|admin-surface|resource is required")
+		return fail(stderr, application.ExitArguments, "service secret|artifact|inspect|manifest|schema|status|admin-surface|resource is required")
+	}
+	if args[0] == "secret" {
+		return r.serviceSecret(ctx, args[1:], stdout, stderr)
 	}
 	if args[0] == "admin-surface" {
 		return r.serviceAdminSurface(ctx, args[1:], stdout, stderr)

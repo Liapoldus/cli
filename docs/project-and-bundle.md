@@ -124,6 +124,13 @@ Project хранит только symbolic secret references. CLI получае
 server-side redemption. Значения не попадают в bundle digest display, logs,
 Git, Core settings JSON или operation report.
 
+Для локального Core доступен typed каталог `liapoldus service secret
+list|create|revoke --target local --service <id>`. Создание принимает значение
+только через скрытый prompt или host-owned secure stdin и сохраняет его в OS
+keyring; Core получает только opaque reference, назначение и label. Отзыв требует
+`--confirm`, сначала блокирует дальнейшие redemption в Core и затем очищает
+локальную keyring запись и staged файл.
+
 ## 7. Reproducibility и rollback
 
 Rollback — это повторный `apply` уже известной Git revision либо специальная

@@ -46,6 +46,14 @@ func ManagementCredentialReference(targetName string) string {
 	return "os-keyring:v1:core-management:" + hex.EncodeToString(digest[:])
 }
 
+// ServiceSecretCredentialReference derives an opaque local vault key scoped to
+// one target, service and Core reference. None of those identifiers are stored
+// as the keyring account name.
+func ServiceSecretCredentialReference(targetName, serviceID, reference string) string {
+	digest := sha256.Sum256([]byte(targetName + "\x00" + serviceID + "\x00" + reference))
+	return "os-keyring:v1:service-secret:" + hex.EncodeToString(digest[:])
+}
+
 // RuntimeConfig contains non-secret references and deterministic network
 // policy used only when the local CLI stages already-built service binaries in
 // Docker. Credentials remain file references owned by the target profile.

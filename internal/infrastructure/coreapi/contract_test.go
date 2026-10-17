@@ -34,6 +34,11 @@ func TestCanonicalCoreManagementContract(t *testing.T) {
 		"multipart/form-data:",
 		"/api/service-links:",
 		"/api/service-links/{callerInstanceId}/{targetInstanceId}:",
+		"/api/services/{serviceId}/secrets:",
+		"operationId: listServiceSecretReferences",
+		"operationId: createServiceSecretReference",
+		"/api/services/{serviceId}/secrets/{reference}:",
+		"operationId: revokeServiceSecretReference",
 	}
 	for _, marker := range required {
 		if !strings.Contains(contract, marker) {

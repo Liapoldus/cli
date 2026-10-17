@@ -34,6 +34,26 @@ func TestKeyringProviderStoresAndResolvesCredentialWithoutSerializingIt(t *testi
 	}
 }
 
+func TestKeyringProviderAcceptsServiceSecretReferencesInSeparateNamespace(t *testing.T) {
+	backend := newMemoryKeyring()
+	provider := KeyringProvider{Backend: backend}
+	reference := domain.ServiceSecretCredentialReference("local", "server", "ssr:v1:00112233445566778899aabbccddeeff")
+	secret := "service-secret-value"
+	if err := provider.Store(context.Background(), reference, secret); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := provider.Resolve(context.Background(), reference)
+	if err != nil || resolved != secret {
+		t.Fatalf("resolved=%q error=%v", resolved, err)
+	}
+	if err := provider.Delete(context.Background(), reference); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := backend.values[reference]; exists {
+		t.Fatal("service secret was not removed from the OS vault")
+	}
+}
+
 func TestKeyringProviderRejectsUnknownReferencesAndFailsClosed(t *testing.T) {
 	secret := "do-not-leak-this-token"
 	backend := newMemoryKeyring()

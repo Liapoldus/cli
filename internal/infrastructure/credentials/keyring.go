@@ -96,8 +96,15 @@ func (provider KeyringProvider) Delete(ctx context.Context, reference string) er
 }
 
 func validateReference(reference string) error {
-	const prefix = "os-keyring:v1:core-management:"
-	if !strings.HasPrefix(reference, prefix) {
+	const managementPrefix = "os-keyring:v1:core-management:"
+	const serviceSecretPrefix = "os-keyring:v1:service-secret:"
+	prefix := ""
+	switch {
+	case strings.HasPrefix(reference, managementPrefix):
+		prefix = managementPrefix
+	case strings.HasPrefix(reference, serviceSecretPrefix):
+		prefix = serviceSecretPrefix
+	default:
 		return errors.New("unsupported credential reference")
 	}
 	encoded := strings.TrimPrefix(reference, prefix)

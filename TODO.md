@@ -1,5 +1,21 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Local service-secret reference bridge — 2026-10-17
+
+- [x] Added typed Core Management API list/create/revoke calls for service-bound
+  opaque references. The API request and response contracts reject unknown
+  fields and never contain the secret value.
+- [x] Added `liapoldus service secret list|create|revoke --target local
+  --service <id>`. Create accepts secure stdin or a hidden terminal prompt,
+  stores the value in the OS keyring, stages it with mode `0600` under the
+  target-owned Core `secrets/` directory, and reports only safe reference
+  metadata. Core rejection removes the staged file and vault entry. Revoke
+  requires `--confirm` and clears local copies only after Core accepts it.
+- [x] On 2026-10-17, `GOWORK=off make check` and `GOWORK=off make test-race`
+  passed with `LIAPOLDUS_CORE_OPENAPI` pinned to the current Core source contract.
+- [ ] Studio's typed native secure-input bridge and settings UI remain open;
+  plugins must receive opaque references only.
+
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
 - The earlier `runtime.start` lease failure has been recovered through Studio

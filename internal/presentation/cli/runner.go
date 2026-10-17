@@ -896,10 +896,11 @@ type commandOptions struct {
 	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint string
 	service, resource, requestFile                                              string
 	page, action, artifactFile, contentType, metadataFile, ifMatch              string
+	purpose, label, reference                                                   string
 	expectedGeneration                                                          *int64
 	approvalEvidence                                                            string
 	caFile, clientCertFile, clientKeyFile, serverName                           string
-	confirm, wait, tokenStdin, replace, retryFailed                             bool
+	confirm, wait, tokenStdin, secretStdin, replace, retryFailed                bool
 	projectExplicit                                                             bool
 }
 
@@ -925,6 +926,10 @@ func parseOptions(args []string) (commandOptions, error) {
 		}
 		if arg == "--token-stdin" {
 			options.tokenStdin = true
+			continue
+		}
+		if arg == "--secret-stdin" {
+			options.secretStdin = true
 			continue
 		}
 		if !strings.HasPrefix(arg, "--") || index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") {
@@ -984,6 +989,12 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.peerEndpoint = value
 		case "--service":
 			options.service = value
+		case "--purpose":
+			options.purpose = value
+		case "--label":
+			options.label = value
+		case "--reference":
+			options.reference = value
 		case "--resource":
 			options.resource = value
 		case "--page":

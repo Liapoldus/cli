@@ -105,3 +105,19 @@ configuration schema, identity и readiness. В CLI нет Service SDK client и
 Замена link policy использует Core revision в `If-Match` и отдельный
 `Idempotency-Key`. Идентификаторы instance/replica, contract IDs и application
 methods не переименовываются.
+
+Для локального target CLI также использует ограниченный каталог секретных
+ссылок Core:
+
+```text
+GET    /api/services/{serviceId}/secrets?purpose=<purpose>
+POST   /api/services/{serviceId}/secrets
+DELETE /api/services/{serviceId}/secrets/{referenceId}
+```
+
+В `POST` отправляются только opaque reference, назначение и label. Значение
+вводится через скрытый терминальный prompt или отдельный secure stdin host-поток,
+сохраняется в OS keyring и материализуется для Core с правами `0600` внутри
+target-owned `secrets/`. Оно не попадает в Core request, CLI events, argv,
+Project или отчёты. `service secret rotate` создаёт новую ссылку; старая
+остаётся активной до явного подтверждённого `revoke`.
