@@ -150,6 +150,93 @@ func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *tes
 	}
 }
 
+func TestServiceSecretRevokeRetriesLocalCleanupAfterCoreRevocation(t *testing.T) {
+	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
+	const secretValue = "sensitive-marker-value"
+	root := t.TempDir()
+	useRuntimeCache(t, filepath.Join(root, "cache"))
+	project := filepath.Join(root, "project")
+	settings := []byte(`{"enabled":false}`)
+	writeServiceSecretProject(t, project, settings)
+	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, StatePath: filepath.Join(root, "core", "core.sqlite"), Bootstrap: domain.CoreBootstrap{SecretRoot: filepath.Join(root, "core", "secrets")}}
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagedPath := filepath.Join(secretRoot, reference)
+	if err := os.Mkdir(stagedPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: reference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token"}); err != nil {
+		t.Fatal(err)
+	}
+	vault := &memoryCredentialVault{values: map[string]string{domain.ServiceSecretCredentialReference("local", "server", reference): secretValue}}
+	state := "active"
+	deleteCalls := 0
+	digest := secretSettingsDigest(t, settings)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/secrets":
+			_ = json.NewEncoder(response).Encode(map[string]any{"items": []domain.ServiceSecretReference{{
+				Reference: reference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token", State: state, CreatedAt: "2026-10-17T00:00:00Z",
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/status":
+			_, _ = response.Write(serviceSecretStatus(digest, true))
+		case request.Method == http.MethodDelete && request.URL.Path == "/api/services/server/secrets/"+reference:
+			deleteCalls++
+			state = "revoked"
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected Core request=%s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	target.Endpoint = server.URL
+	target.CredentialRef = "core-token-ref"
+	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault,
+		Source: git.Repository{}, Snapshots: git.Snapshotter{},
+		CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) }}
+	args := []string{"service", "secret", "revoke", "--target", "local", "--project", project, "--service", "server", "--reference", reference, "--confirm"}
+	var output bytes.Buffer
+	if code := runner.Run(args, &output, &output); code == application.ExitOK {
+		t.Fatalf("revoke unexpectedly succeeded before local cleanup could run: %s", output.String())
+	}
+	if state != "revoked" || deleteCalls != 1 {
+		t.Fatalf("first attempt state=%s Core revoke calls=%d", state, deleteCalls)
+	}
+	if value, err := vault.Resolve(context.Background(), domain.ServiceSecretCredentialReference("local", "server", reference)); err != nil || value != secretValue {
+		t.Fatalf("failed local cleanup removed the vault value: %q error=%v", value, err)
+	}
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil || len(index.Items) != 1 {
+		t.Fatalf("failed local cleanup removed recoverable metadata: %+v error=%v", index.Items, err)
+	}
+
+	if err := os.Remove(stagedPath); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if code := runner.Run(args, &output, &output); code != application.ExitOK {
+		t.Fatalf("retry failed after Core had already revoked the reference: code=%d output=%s", code, output.String())
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("retry repeated Core revocation %d times", deleteCalls)
+	}
+	if _, err := vault.Resolve(context.Background(), domain.ServiceSecretCredentialReference("local", "server", reference)); err == nil {
+		t.Fatal("successful cleanup retry left the value in the OS vault")
+	}
+	if _, err := os.Stat(stagedPath); !os.IsNotExist(err) {
+		t.Fatalf("successful cleanup retry left a runtime copy: %v", err)
+	}
+	index, err = readStagedServiceSecretIndex(target)
+	if err != nil || len(index.Items) != 0 {
+		t.Fatalf("successful cleanup retry left local metadata: %+v error=%v", index.Items, err)
+	}
+	if strings.Contains(output.String(), secretValue) {
+		t.Fatalf("cleanup retry leaked the secret value: %s", output.String())
+	}
+}
+
 func TestServiceSecretRevokeFailsClosedUntilProjectAndAllReplicasAgree(t *testing.T) {
 	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
 	for _, test := range []struct {

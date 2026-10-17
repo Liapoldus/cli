@@ -315,21 +315,26 @@ func (r Runner) revokeServiceSecret(ctx context.Context, target domain.Target, c
 	if err != nil {
 		return fail(stderr, application.ExitTarget, err.Error())
 	}
-	active := false
+	state := ""
 	for _, item := range items {
-		if item.Reference == options.reference && item.ServiceID == options.service && item.State == "active" && item.Validate() {
-			active = true
-			break
+		if item.Reference != options.reference {
+			continue
 		}
+		if !item.Validate() || item.ServiceID != options.service || (item.State != "active" && item.State != "revoked") || state != "" {
+			return fail(stderr, application.ExitTarget, "Core returned invalid metadata for this service secret")
+		}
+		state = item.State
 	}
-	if !active {
+	if state == "" {
 		return fail(stderr, application.ExitArguments, "service secret reference is not active for this service")
 	}
 	if err := r.verifyServiceSecretRetirement(ctx, options.project, options.service, options.reference, core); err != nil {
 		return fail(stderr, application.ExitValidation, err.Error())
 	}
-	if err := client.RevokeServiceSecretReference(ctx, options.service, options.reference); err != nil {
-		return fail(stderr, application.ExitTarget, err.Error())
+	if state == "active" {
+		if err := client.RevokeServiceSecretReference(ctx, options.service, options.reference); err != nil {
+			return fail(stderr, application.ExitTarget, err.Error())
+		}
 	}
 	secretRoot, err := serviceSecretRoot(target)
 	if err != nil {

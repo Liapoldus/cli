@@ -1,5 +1,20 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Secret cleanup retry after Core revocation — 2026-10-18
+
+- [x] A local cleanup failure after Core has revoked a reference can now be
+  retried safely. CLI rechecks the current Project and every replica's exact
+  digest/generation/readiness ACK, recognizes the Core `revoked` metadata state,
+  skips a duplicate Core revoke, then idempotently clears the runtime copy,
+  local reference index and OS vault entry.
+- [x] Regression simulates a Core revoke followed by unsafe local staging entry,
+  verifies that vault/index data are preserved on the first failure, then fixes
+  the entry and confirms a retry completes cleanup without a second Core revoke.
+- [x] `GOWORK=off LIAPOLDUS_CORE_OPENAPI='/Users/docup/Projects/Liapoldus Engine/core/contracts/v1/management.openapi.yaml' make check`,
+  `GOWORK=off make test-race`, and the focused secret-revocation suite pass.
+  This is source-level failure recovery evidence; the local Core runtime
+  rotation/timeout/restart acceptance is still open.
+
 ## Local service-secret reference lifecycle — 2026-10-18
 
 - [x] Added typed Core Management API list/create/revoke calls for service-bound
