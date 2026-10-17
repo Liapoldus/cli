@@ -229,6 +229,7 @@ func projectCoreSettings(target domain.Target, snapshot domain.CoreSettingsSnaps
 	if err := decoder.Decode(&settings); err != nil || decoder.Decode(new(any)) != io.EOF || settings.Management.Listen == "" || settings.ServiceControl.Listen == "" {
 		return nil, domain.CoreContractError{Operation: "settings", Message: "unsupported settings document"}
 	}
+	secretRoot, _ := serviceSecretRoot(target)
 	view := map[string]any{
 		"schemaVersion": "core-settings-view/v1", "target": target.Name,
 		"desiredRevision": snapshot.DesiredRevision, "effectiveRevision": snapshot.EffectiveRevision,
@@ -256,7 +257,7 @@ func projectCoreSettings(target domain.Target, snapshot domain.CoreSettingsSnaps
 				"replicaClientCRLCount": len(settings.ServiceControl.ReplicaClientCRLs),
 				"replicaServerCRLCount": len(settings.ServiceControl.ReplicaServerCRLs),
 			},
-			"secretRoot": corePathReference(target, settings.SecretRoot, "/var/lib/liapoldus/secrets", filepath.Join(filepath.Dir(target.StatePath), "secrets"), "secretRoot"),
+			"secretRoot": corePathReference(target, settings.SecretRoot, "/var/lib/liapoldus/secrets", secretRoot, "secretRoot"),
 		},
 	}
 	if settings.TrafficController != nil {

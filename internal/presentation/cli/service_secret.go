@@ -3,11 +3,14 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Liapoldus/cli/internal/application"
@@ -16,9 +19,41 @@ import (
 
 const serviceSecretMaximumBytes = 16 << 10
 
+const serviceSecretIndexVersion = "local-service-secret-references/v1"
+
+type stagedServiceSecretReference struct {
+	Reference    string `json:"reference"`
+	ServiceID    string `json:"serviceId"`
+	Purpose      string `json:"purpose"`
+	Label        string `json:"label"`
+	RotationFrom string `json:"rotationFrom,omitempty"`
+}
+
+type pendingServiceSecretRotation struct {
+	PreviousReference string `json:"previousReference"`
+	CreatedReference  string `json:"createdReference"`
+	ServiceID         string `json:"serviceId"`
+	Purpose           string `json:"purpose"`
+	State             string `json:"state"`
+}
+
+type pendingServiceSecretRegistration struct {
+	Reference string `json:"reference"`
+	ServiceID string `json:"serviceId"`
+	Purpose   string `json:"purpose"`
+	Label     string `json:"label"`
+	State     string `json:"state"`
+}
+
+type stagedServiceSecretIndex struct {
+	SchemaVersion string                         `json:"schemaVersion"`
+	Target        string                         `json:"target"`
+	Items         []stagedServiceSecretReference `json:"items"`
+}
+
 func (r Runner) serviceSecret(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || (args[0] != "list" && args[0] != "create" && args[0] != "revoke") {
-		return fail(stderr, application.ExitArguments, "usage: liapoldus service secret list|create|revoke --target local --service <id>")
+	if len(args) == 0 || (args[0] != "list" && args[0] != "create" && args[0] != "rotate" && args[0] != "register" && args[0] != "revoke") {
+		return fail(stderr, application.ExitArguments, "usage: liapoldus service secret list|create|rotate|register|revoke --target local --service <id>")
 	}
 	options, err := parseOptions(args[1:])
 	if err != nil {
@@ -55,14 +90,117 @@ func (r Runner) serviceSecret(ctx context.Context, args []string, stdout, stderr
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, map[string]any{"schemaVersion": "service-secret-references/v1", "target": target.Name, "serviceId": options.service, "items": items})
+		index, err := readStagedServiceSecretIndex(target)
+		if err != nil {
+			return fail(stderr, application.ExitTarget, "local secret rotation metadata is unavailable")
+		}
+		rotations := make([]pendingServiceSecretRotation, 0)
+		registrations := make([]pendingServiceSecretRegistration, 0)
+		itemsByReference := make(map[string]domain.ServiceSecretReference, len(items))
+		for _, item := range items {
+			itemsByReference[item.Reference] = item
+		}
+		for _, staged := range index.Items {
+			if staged.ServiceID != options.service || (options.purpose != "" && staged.Purpose != options.purpose) {
+				continue
+			}
+			registered, found := itemsByReference[staged.Reference]
+			metadataMatches := found && registered.ServiceID == staged.ServiceID && registered.Purpose == staged.Purpose && registered.Label == staged.Label && registered.State == "active"
+			if !metadataMatches {
+				state := "pending"
+				if found {
+					state = "conflict"
+				}
+				registrations = append(registrations, pendingServiceSecretRegistration{
+					Reference: staged.Reference, ServiceID: staged.ServiceID, Purpose: staged.Purpose, Label: staged.Label, State: state,
+				})
+				continue
+			}
+			if staged.RotationFrom != "" {
+				previous, previousFound := itemsByReference[staged.RotationFrom]
+				if previousFound && previous.ServiceID == staged.ServiceID && previous.Purpose == staged.Purpose && previous.State == "active" {
+					rotations = append(rotations, pendingServiceSecretRotation{
+						PreviousReference: staged.RotationFrom, CreatedReference: staged.Reference,
+						ServiceID: staged.ServiceID, Purpose: staged.Purpose, State: "staged",
+					})
+				}
+			}
+		}
+		sort.Slice(rotations, func(left, right int) bool {
+			return rotations[left].CreatedReference < rotations[right].CreatedReference
+		})
+		return encode(stdout, map[string]any{"schemaVersion": "service-secret-references/v1", "target": target.Name, "serviceId": options.service, "items": items, "pendingRotations": rotations, "pendingRegistrations": registrations})
 	case "create":
 		return r.createServiceSecret(ctx, target, secretClient, options, stdout, stderr)
+	case "rotate":
+		return r.rotateServiceSecret(ctx, target, secretClient, options, stdout, stderr)
+	case "register":
+		return r.registerStagedServiceSecret(ctx, target, secretClient, options, stdout, stderr)
 	case "revoke":
 		return r.revokeServiceSecret(ctx, target, secretClient, options, stdout, stderr)
 	default:
 		return fail(stderr, application.ExitArguments, "unsupported service secret operation")
 	}
+}
+
+func (r Runner) registerStagedServiceSecret(ctx context.Context, target domain.Target, client domain.ServiceSecretReferenceClient, options commandOptions, stdout, stderr io.Writer) int {
+	if !options.confirm || !validServiceSecretReference(options.reference) || options.purpose != "" || options.label != "" || options.secretStdin || options.tokenStdin || options.endpoint != "" || options.replace {
+		return fail(stderr, application.ExitArguments, "service secret register requires --reference and --confirm")
+	}
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "local secret registration metadata is unavailable")
+	}
+	var staged *stagedServiceSecretReference
+	for itemIndex := range index.Items {
+		if index.Items[itemIndex].Reference == options.reference && index.Items[itemIndex].ServiceID == options.service {
+			staged = &index.Items[itemIndex]
+			break
+		}
+	}
+	if staged == nil {
+		return fail(stderr, application.ExitArguments, "staged service secret is unavailable for this service")
+	}
+	items, err := client.ListServiceSecretReferences(ctx, options.service, staged.Purpose)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "Core secret catalog is unavailable; the staged secret remains available")
+	}
+	for _, item := range items {
+		if item.Reference != staged.Reference {
+			continue
+		}
+		if item.ServiceID == staged.ServiceID && item.Purpose == staged.Purpose && item.Label == staged.Label && item.State == "active" {
+			return encode(stdout, map[string]any{"schemaVersion": "service-secret-register-result/v1", "target": target.Name, "item": item})
+		}
+		return fail(stderr, application.ExitTarget, "Core secret metadata conflicts with the staged local reference; staged value was preserved")
+	}
+	vault := r.credentialVault()
+	if vault == nil {
+		return fail(stderr, application.ExitTarget, domain.ErrCredentialStore.Error())
+	}
+	credentialReference := domain.ServiceSecretCredentialReference(target.Name, options.service, staged.Reference)
+	value, err := vault.Resolve(ctx, credentialReference)
+	if err != nil || len(value) == 0 || len(value) > serviceSecretMaximumBytes || strings.ContainsRune(value, '\x00') {
+		return fail(stderr, application.ExitTarget, "staged local secret is unavailable; its reference metadata was preserved")
+	}
+	defer clear([]byte(value))
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "local secret runtime mount is unavailable; staged value was preserved")
+	}
+	if err := stageServiceSecret(secretRoot, staged.Reference, []byte(value)); err != nil {
+		return fail(stderr, application.ExitTarget, "local secret runtime mount is unavailable; staged value was preserved")
+	}
+	created, err := client.CreateServiceSecretReference(ctx, options.service, domain.ServiceSecretReference{
+		Reference: staged.Reference, ServiceID: staged.ServiceID, Purpose: staged.Purpose, Label: staged.Label, State: "active",
+	})
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "Core registration failed; staged secret remains available for retry")
+	}
+	if created.Reference != staged.Reference || created.ServiceID != staged.ServiceID || created.Purpose != staged.Purpose || created.Label != staged.Label || created.State != "active" {
+		return fail(stderr, application.ExitTarget, "Core returned mismatched metadata; staged secret remains available for review")
+	}
+	return encode(stdout, map[string]any{"schemaVersion": "service-secret-register-result/v1", "target": target.Name, "item": created})
 }
 
 func (r Runner) createServiceSecret(ctx context.Context, target domain.Target, client domain.ServiceSecretReferenceClient, options commandOptions, stdout, stderr io.Writer) int {
@@ -72,41 +210,96 @@ func (r Runner) createServiceSecret(ctx context.Context, target domain.Target, c
 	if studioEventsEnabled(ctx) && !options.secretStdin {
 		return fail(stderr, application.ExitArguments, "Studio secret creation requires secure stdin input")
 	}
-	vault := r.credentialVault()
-	if vault == nil {
-		return fail(stderr, application.ExitTarget, domain.ErrCredentialStore.Error())
+	value, err := r.readServiceSecret(options)
+	if err != nil {
+		return fail(stderr, application.ExitArguments, err.Error())
+	}
+	defer clear(value)
+	created, err := r.createServiceSecretValue(ctx, target, client, options, value, "")
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	return encode(stdout, map[string]any{"schemaVersion": "service-secret-create-result/v1", "target": target.Name, "item": created})
+}
+
+func (r Runner) rotateServiceSecret(ctx context.Context, target domain.Target, client domain.ServiceSecretReferenceClient, options commandOptions, stdout, stderr io.Writer) int {
+	if !options.confirm || !validServiceSecretReference(options.reference) || options.purpose == "" || strings.TrimSpace(options.label) == "" ||
+		options.tokenStdin || options.endpoint != "" || options.replace {
+		return fail(stderr, application.ExitArguments, "service secret rotate requires --reference, --purpose, --label and --confirm")
+	}
+	if studioEventsEnabled(ctx) && !options.secretStdin {
+		return fail(stderr, application.ExitArguments, "Studio secret rotation requires secure stdin input")
+	}
+	items, err := client.ListServiceSecretReferences(ctx, options.service, options.purpose)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	var old *domain.ServiceSecretReference
+	for index := range items {
+		item := &items[index]
+		if item.Reference == options.reference {
+			old = item
+			break
+		}
+	}
+	if old == nil || !old.Validate() || old.ServiceID != options.service || old.Purpose != options.purpose || old.State != "active" {
+		return fail(stderr, application.ExitArguments, "service secret rotation source is unavailable for this service and purpose")
 	}
 	value, err := r.readServiceSecret(options)
 	if err != nil {
 		return fail(stderr, application.ExitArguments, err.Error())
 	}
 	defer clear(value)
+	created, err := r.createServiceSecretValue(ctx, target, client, options, value, old.Reference)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	return encode(stdout, map[string]any{
+		"schemaVersion": "service-secret-rotation-result/v1", "target": target.Name,
+		"serviceId": options.service, "previous": *old, "created": created, "state": "staged",
+	})
+}
+
+func (r Runner) createServiceSecretValue(ctx context.Context, target domain.Target, client domain.ServiceSecretReferenceClient, options commandOptions, value []byte, rotationFrom string) (domain.ServiceSecretReference, error) {
+	if len(value) == 0 || len(value) > serviceSecretMaximumBytes {
+		return domain.ServiceSecretReference{}, errors.New("secret input is invalid")
+	}
+	vault := r.credentialVault()
+	if vault == nil {
+		return domain.ServiceSecretReference{}, domain.ErrCredentialStore
+	}
 	reference, err := newServiceSecretReference()
 	if err != nil {
-		return fail(stderr, application.ExitTarget, "service secret reference could not be generated")
+		return domain.ServiceSecretReference{}, errors.New("service secret reference could not be generated")
 	}
 	credentialReference := domain.ServiceSecretCredentialReference(target.Name, options.service, reference)
 	if err := vault.Store(ctx, credentialReference, string(value)); err != nil {
-		return fail(stderr, application.ExitTarget, domain.ErrCredentialStore.Error())
+		return domain.ServiceSecretReference{}, domain.ErrCredentialStore
 	}
 	secretRoot, err := serviceSecretRoot(target)
 	if err != nil {
 		_ = vault.Delete(ctx, credentialReference)
-		return fail(stderr, application.ExitTarget, "local Core secret storage is unavailable")
+		return domain.ServiceSecretReference{}, errors.New("local secret runtime mount is unavailable")
+	}
+	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{
+		Reference: reference, ServiceID: options.service, Purpose: options.purpose, Label: options.label, RotationFrom: rotationFrom,
+	}); err != nil {
+		_ = vault.Delete(ctx, credentialReference)
+		return domain.ServiceSecretReference{}, errors.New("local secret reference index is unavailable")
 	}
 	if err := stageServiceSecret(secretRoot, reference, value); err != nil {
-		_ = vault.Delete(ctx, credentialReference)
-		return fail(stderr, application.ExitTarget, "local Core secret storage is unavailable")
+		return domain.ServiceSecretReference{}, errors.New("local secret runtime mount is unavailable; reference and value remain staged for retry")
 	}
 	created, err := client.CreateServiceSecretReference(ctx, options.service, domain.ServiceSecretReference{
 		Reference: reference, ServiceID: options.service, Purpose: options.purpose, Label: options.label, State: "active",
 	})
 	if err != nil {
-		removeStagedServiceSecret(secretRoot, reference)
-		_ = vault.Delete(ctx, credentialReference)
-		return fail(stderr, application.ExitTarget, err.Error())
+		return domain.ServiceSecretReference{}, errors.New("Core metadata registration failed; reference and value remain staged for retry")
 	}
-	return encode(stdout, map[string]any{"schemaVersion": "service-secret-create-result/v1", "target": target.Name, "item": created})
+	if created.Reference != reference || created.ServiceID != options.service || created.Purpose != options.purpose || created.State != "active" {
+		return domain.ServiceSecretReference{}, errors.New("Core returned mismatched metadata; reference and value remain staged for review")
+	}
+	return created, nil
 }
 
 func (r Runner) revokeServiceSecret(ctx context.Context, target domain.Target, client domain.ServiceSecretReferenceClient, options commandOptions, stdout, stderr io.Writer) int {
@@ -122,6 +315,9 @@ func (r Runner) revokeServiceSecret(ctx context.Context, target domain.Target, c
 	}
 	if err := removeStagedServiceSecret(secretRoot, options.reference); err != nil {
 		return fail(stderr, application.ExitTarget, "Core revoked the secret, but local secret cleanup failed")
+	}
+	if err := removeStagedServiceSecretReference(target, options.reference); err != nil {
+		return fail(stderr, application.ExitTarget, "Core revoked the secret, but local secret metadata cleanup failed")
 	}
 	vault := r.credentialVault()
 	if vault == nil || vault.Delete(ctx, domain.ServiceSecretCredentialReference(target.Name, options.service, options.reference)) != nil {
@@ -170,11 +366,11 @@ func newServiceSecretReference() (string, error) {
 
 func serviceSecretRoot(target domain.Target) (string, error) {
 	if target.Name != "local" || target.Transport != domain.TransportLocalProcess || target.StatePath == "" {
-		return "", errors.New("local Core state path is unavailable")
+		return "", errors.New("local Core target is unavailable")
 	}
 	statePath, err := filepath.Abs(target.StatePath)
 	if err != nil || statePath == filepath.VolumeName(statePath)+string(filepath.Separator) {
-		return "", errors.New("secret root path is invalid")
+		return "", errors.New("Core state path is invalid")
 	}
 	if info, err := os.Lstat(statePath); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
 		return "", errors.New("Core state file is not a regular file")
@@ -182,28 +378,259 @@ func serviceSecretRoot(target domain.Target) (string, error) {
 		return "", err
 	}
 	stateDirectory := filepath.Dir(statePath)
-	resolvedStateDirectory, err := filepath.EvalSymlinks(stateDirectory)
+	root, err := runtimeSecretMountDirectory(target)
 	if err != nil {
-		return "", errors.New("Core state directory is unavailable")
+		return "", err
 	}
-	if info, err := os.Stat(resolvedStateDirectory); err != nil || !info.IsDir() {
-		return "", errors.New("secret root is unavailable")
+	relative, err := filepath.Rel(stateDirectory, root)
+	if err != nil || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return "", errors.New("secret runtime mount must be outside Core state")
 	}
-	root := filepath.Join(resolvedStateDirectory, "secrets")
 	info, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(root, 0o700); err != nil {
+		if err := os.MkdirAll(root, 0o700); err != nil {
 			return "", err
 		}
 		info, err = os.Lstat(root)
 	}
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return "", errors.New("secret root contains an unsafe path component")
+		return "", errors.New("secret runtime mount contains an unsafe path component")
 	}
 	if err := os.Chmod(root, 0o700); err != nil {
 		return "", err
 	}
-	return root, nil
+	return filepath.Clean(root), nil
+}
+
+func runtimeSecretMountDirectory(target domain.Target) (string, error) {
+	staging, err := runtimeStagingDirectory(target)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(staging, "secrets"), nil
+}
+
+func stagedServiceSecretIndexPath(target domain.Target) (string, error) {
+	staging, err := runtimeStagingDirectory(target)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(staging, "service-secret-references.json"), nil
+}
+
+func readStagedServiceSecretIndex(target domain.Target) (stagedServiceSecretIndex, error) {
+	indexPath, err := stagedServiceSecretIndexPath(target)
+	if err != nil {
+		return stagedServiceSecretIndex{}, err
+	}
+	encoded, err := os.ReadFile(indexPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return stagedServiceSecretIndex{SchemaVersion: serviceSecretIndexVersion, Target: target.Name}, nil
+	}
+	info, infoErr := os.Lstat(indexPath)
+	if err != nil || infoErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || len(encoded) > 1<<20 {
+		return stagedServiceSecretIndex{}, errors.New("local secret reference index is unavailable")
+	}
+	var index stagedServiceSecretIndex
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&index) != nil || index.SchemaVersion != serviceSecretIndexVersion || index.Target != target.Name || len(index.Items) > 4096 {
+		return stagedServiceSecretIndex{}, errors.New("local secret reference index is invalid")
+	}
+	seen := make(map[string]struct{}, len(index.Items))
+	byReference := make(map[string]stagedServiceSecretReference, len(index.Items))
+	for _, item := range index.Items {
+		if !validStagedServiceSecretReference(item) {
+			return stagedServiceSecretIndex{}, errors.New("local secret reference index is invalid")
+		}
+		if _, exists := seen[item.Reference]; exists {
+			return stagedServiceSecretIndex{}, errors.New("local secret reference index is invalid")
+		}
+		seen[item.Reference] = struct{}{}
+		byReference[item.Reference] = item
+	}
+	for _, item := range index.Items {
+		if item.RotationFrom == "" {
+			continue
+		}
+		previous, exists := byReference[item.RotationFrom]
+		// The source reference may have been created on another machine or
+		// before the local reference index existed. When present locally, still
+		// enforce that the relationship cannot cross service or purpose.
+		if exists && (previous.ServiceID != item.ServiceID || previous.Purpose != item.Purpose) {
+			return stagedServiceSecretIndex{}, errors.New("local secret rotation index is invalid")
+		}
+	}
+	return index, nil
+}
+
+func validStagedServiceSecretReference(item stagedServiceSecretReference) bool {
+	if !validServiceSecretReference(item.Reference) || !validRuntimeServiceID(item.ServiceID) || item.Purpose == "" ||
+		strings.TrimSpace(item.Purpose) != item.Purpose || len(item.Purpose) > 192 || (item.RotationFrom != "" && (!validServiceSecretReference(item.RotationFrom) || item.RotationFrom == item.Reference)) ||
+		strings.TrimSpace(item.Label) == "" || strings.TrimSpace(item.Label) != item.Label || len([]rune(item.Label)) > 128 || strings.ContainsAny(item.Label, "\x00\r\n") {
+		return false
+	}
+	for _, part := range strings.Split(item.Purpose, ".") {
+		if part == "" || part[0] < 'a' || part[0] > 'z' {
+			return false
+		}
+		for _, character := range part {
+			if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789-", character) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func writeStagedServiceSecretIndex(target domain.Target, index stagedServiceSecretIndex) error {
+	indexPath, err := stagedServiceSecretIndexPath(target)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(index)
+	if err != nil || len(encoded) > 1<<20 {
+		return errors.New("local secret reference index is unavailable")
+	}
+	staging, err := runtimeStagingDirectory(target)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(staging, ".secret-index-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporary.Name(), indexPath)
+}
+
+func addStagedServiceSecretReference(target domain.Target, item stagedServiceSecretReference) error {
+	if !validStagedServiceSecretReference(item) {
+		return errors.New("invalid local secret reference metadata")
+	}
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil {
+		return err
+	}
+	for _, current := range index.Items {
+		if current.Reference == item.Reference {
+			return errors.New("local secret reference already exists")
+		}
+	}
+	index.Items = append(index.Items, item)
+	sort.Slice(index.Items, func(i, j int) bool { return index.Items[i].Reference < index.Items[j].Reference })
+	return writeStagedServiceSecretIndex(target, index)
+}
+
+func removeStagedServiceSecretReference(target domain.Target, reference string) error {
+	if !validServiceSecretReference(reference) {
+		return errors.New("invalid local secret reference")
+	}
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil {
+		return err
+	}
+	filtered := index.Items[:0]
+	for _, item := range index.Items {
+		if item.Reference == reference {
+			continue
+		}
+		if item.RotationFrom == reference {
+			item.RotationFrom = ""
+		}
+		filtered = append(filtered, item)
+	}
+	index.Items = filtered
+	return writeStagedServiceSecretIndex(target, index)
+}
+
+func (r Runner) materializeServiceSecretMount(ctx context.Context, target domain.Target, reset bool) error {
+	root, err := serviceSecretRoot(target)
+	if err != nil {
+		return errors.New("local secret runtime mount is unavailable")
+	}
+	if reset {
+		if err := clearServiceSecretMount(root); err != nil {
+			return errors.New("local secret runtime mount could not be refreshed")
+		}
+	}
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil {
+		return err
+	}
+	if len(index.Items) == 0 {
+		return nil
+	}
+	vault := r.credentialVault()
+	if vault == nil {
+		return domain.ErrCredentialStore
+	}
+	for _, item := range index.Items {
+		value, err := vault.Resolve(ctx, domain.ServiceSecretCredentialReference(target.Name, item.ServiceID, item.Reference))
+		if err != nil || value == "" || len(value) > serviceSecretMaximumBytes {
+			return errors.New("a local service secret is unavailable in the operating-system vault")
+		}
+		secret := []byte(value)
+		path := filepath.Join(root, item.Reference)
+		if fileInfo, statErr := os.Lstat(path); statErr == nil && (fileInfo.Mode()&os.ModeSymlink != 0 || !fileInfo.Mode().IsRegular()) {
+			clear(secret)
+			return errors.New("local service secret runtime mount contains an unsafe file")
+		}
+		if existing, readErr := os.ReadFile(path); readErr == nil {
+			if subtle.ConstantTimeCompare(existing, secret) != 1 {
+				clear(existing)
+				clear(secret)
+				return errors.New("local service secret runtime mount does not match the operating-system vault")
+			}
+			clear(existing)
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			clear(secret)
+			return errors.New("local service secret runtime mount is unavailable")
+		} else if err := stageServiceSecret(root, item.Reference, secret); err != nil {
+			clear(secret)
+			return errors.New("local service secret runtime mount could not be refreshed")
+		}
+		clear(secret)
+	}
+	return nil
+}
+
+func clearServiceSecretMount(root string) error {
+	if !filepath.IsAbs(root) {
+		return errors.New("invalid local secret runtime mount")
+	}
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.MkdirAll(root, 0o700)
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if !validServiceSecretReference(entry.Name()) || infoErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("local secret runtime mount contains an unsafe entry")
+		}
+		if err := os.Remove(filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func stageServiceSecret(root, reference string, value []byte) error {

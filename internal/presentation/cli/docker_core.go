@@ -180,6 +180,9 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 			}
 		}
 	}
+	if err := r.materializeServiceSecretMount(ctx, target, true); err != nil {
+		return result, err
+	}
 	if err := r.Docker.RunContainer(ctx, request); err != nil {
 		return result, fmt.Errorf("start Core Docker container: %w", describeCoreMountFailure(err, request, target.Name))
 	}
@@ -229,6 +232,8 @@ func describeCoreMountFailure(err error, request domain.DockerContainerRequest, 
 		for _, mount := range request.Mounts {
 			if dockerErrorReferencesMountSource(err.Error(), mount.Source) {
 				switch {
+				case mount.Target == "/var/lib/liapoldus/secrets":
+					role = "the private read-only service-secret runtime mount"
 				case mount.Target == "/var/lib/liapoldus":
 					role = "the Core state directory"
 				case mount.Target == "/run/secrets":
@@ -373,10 +378,12 @@ func coreContainerRequest(target domain.Target, label, network, stagedCore, toke
 		}
 	}
 	stateDirectory := filepath.Dir(target.StatePath)
-	if err := os.MkdirAll(filepath.Join(stateDirectory, "secrets"), 0o700); err != nil {
-		return domain.DockerContainerRequest{}, errors.New("Core state storage is unavailable")
-	}
 	mounts = append(mounts, domain.DockerMount{Source: stateDirectory, Target: "/var/lib/liapoldus", ReadOnly: false})
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		return domain.DockerContainerRequest{}, errors.New("local secret runtime mount is unavailable")
+	}
+	mounts = append(mounts, domain.DockerMount{Source: secretRoot, Target: "/var/lib/liapoldus/secrets", ReadOnly: true})
 	controlPublicURL := fmt.Sprintf("https://%s:%d", coreContainer, controlPort)
 	environment := map[string]string{"CORE_SQLITE_PATH": "/var/lib/liapoldus/" + filepath.Base(target.StatePath)}
 	if tokenDirectory != "" {
@@ -586,6 +593,10 @@ func runtimeStagingDirectory(target domain.Target) (string, error) {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", errors.New("runtime staging directory is unavailable")
 	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", errors.New("runtime staging directory contains an unsafe path component")
+	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		return "", errors.New("runtime staging directory permissions are unavailable")
 	}
@@ -663,14 +674,20 @@ func (r Runner) coreDockerCommand(ctx context.Context, action string, target dom
 				return fail(stderr, application.ExitTarget, fmt.Sprintf("stop Core container: %v", err))
 			}
 		}
+		if secretRoot, rootErr := serviceSecretRoot(target); rootErr != nil || clearServiceSecretMount(secretRoot) != nil {
+			return fail(stderr, application.ExitTarget, "Core stopped, but local service-secret runtime cleanup failed")
+		}
 		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "stopped": stopped})
 	case "restart":
-		_, exists, err := r.inspectTargetCore(ctx, label)
+		container, exists, err := r.inspectTargetCore(ctx, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		if !exists {
 			return fail(stderr, application.ExitTarget, "Core container is not present in the selected target; start it first")
+		}
+		if err := r.materializeServiceSecretMount(ctx, target, !container.State.Running); err != nil {
+			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		if err := r.Docker.RestartContainer(ctx, coreContainer); err != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("restart Core container: %v", err))

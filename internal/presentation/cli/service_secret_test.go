@@ -21,11 +21,11 @@ import (
 func TestServiceSecretCreateStoresValueOutsideProjectAndEmitsMetadataOnly(t *testing.T) {
 	const secretValue = "sensitive-marker-value"
 	root := t.TempDir()
+	useRuntimeCache(t, filepath.Join(root, "cache"))
 	statePath := filepath.Join(root, "core", "core.sqlite")
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	secretRoot := filepath.Join(root, "core", "secrets")
 	vault := &memoryCredentialVault{values: map[string]string{}}
 	var created domain.ServiceSecretReference
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -44,7 +44,11 @@ func TestServiceSecretCreateStoresValueOutsideProjectAndEmitsMetadataOnly(t *tes
 		_ = json.NewEncoder(response).Encode(created)
 	}))
 	defer server.Close()
-	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: server.URL, StatePath: statePath, CredentialRef: "core-token-ref", Bootstrap: domain.CoreBootstrap{SecretRoot: secretRoot}}
+	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: server.URL, StatePath: statePath, CredentialRef: "core-token-ref", Bootstrap: domain.CoreBootstrap{SecretRoot: filepath.Join(root, "core", "secrets")}}
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	runner := Runner{
 		Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault,
@@ -63,6 +67,9 @@ func TestServiceSecretCreateStoresValueOutsideProjectAndEmitsMetadataOnly(t *tes
 		t.Fatalf("vault value=%q error=%v", value, err)
 	}
 	stagedPath := filepath.Join(secretRoot, created.Reference)
+	if relative, err := filepath.Rel(filepath.Dir(statePath), secretRoot); err != nil || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		t.Fatalf("secret runtime mount is inside Core state: %q error=%v", relative, err)
+	}
 	staged, err := os.ReadFile(stagedPath)
 	if err != nil || string(staged) != secretValue {
 		t.Fatalf("staged secret=%q error=%v", staged, err)
@@ -84,12 +91,20 @@ func TestServiceSecretCreateStoresValueOutsideProjectAndEmitsMetadataOnly(t *tes
 func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *testing.T) {
 	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
 	root := t.TempDir()
-	secretRoot := filepath.Join(root, "core", "secrets")
+	useRuntimeCache(t, filepath.Join(root, "cache"))
+	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: "", StatePath: filepath.Join(root, "core", "core.sqlite"), Bootstrap: domain.CoreBootstrap{SecretRoot: filepath.Join(root, "core", "secrets")}}
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(secretRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	stagedPath := filepath.Join(secretRoot, reference)
 	if err := os.WriteFile(stagedPath, []byte("sensitive-marker-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: reference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token"}); err != nil {
 		t.Fatal(err)
 	}
 	vault := &memoryCredentialVault{values: map[string]string{domain.ServiceSecretCredentialReference("local", "server", reference): "sensitive-marker-value"}}
@@ -100,7 +115,8 @@ func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *tes
 		response.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: server.URL, StatePath: filepath.Join(root, "core", "core.sqlite"), CredentialRef: "core-token-ref", Bootstrap: domain.CoreBootstrap{SecretRoot: secretRoot}}
+	target.Endpoint = server.URL
+	target.CredentialRef = "core-token-ref"
 	var output bytes.Buffer
 	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault, CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) }}
 	args := []string{"service", "secret", "revoke", "--target", "local", "--service", "server", "--reference", reference, "--confirm"}
@@ -118,16 +134,46 @@ func TestServiceSecretRevokeRemovesVaultAndStagedValueAfterCoreRevocation(t *tes
 	}
 }
 
-func TestServiceSecretCreateRollsBackVaultAndFileWhenCoreRejectsMetadata(t *testing.T) {
-	secretValue := "secret-that-must-be-cleaned"
+func TestServiceSecretCreatePreservesStagedValueWhenCoreRejectsMetadataAndCanRetry(t *testing.T) {
+	const secretValue = "secret-that-must-be-cleaned"
 	root := t.TempDir()
+	useRuntimeCache(t, filepath.Join(root, "cache"))
 	stateDirectory := filepath.Join(root, "core")
 	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	registered := false
+	var stagedReference domain.ServiceSecretReference
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.WriteHeader(http.StatusConflict)
-		_, _ = io.WriteString(response, `{"code":"invalid_request","detail":"reference conflict"}`)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/secrets":
+			items := []domain.ServiceSecretReference{}
+			if registered {
+				items = append(items, stagedReference)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"items": items})
+		case request.Method == http.MethodPost && request.URL.Path == "/api/services/server/secrets":
+			body, err := io.ReadAll(request.Body)
+			if err != nil || strings.Contains(string(body), secretValue) {
+				t.Fatalf("secret value sent to Core: %s error=%v", body, err)
+			}
+			if err := json.Unmarshal(body, &stagedReference); err != nil {
+				t.Fatal(err)
+			}
+			stagedReference.ServiceID = "server"
+			stagedReference.CreatedAt = "2026-10-17T00:00:00Z"
+			stagedReference.State = "active"
+			if registered {
+				response.WriteHeader(http.StatusCreated)
+				stagedReference.State = "active"
+				_ = json.NewEncoder(response).Encode(stagedReference)
+				return
+			}
+			response.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(response, `{"code":"invalid_request","detail":"temporary registration failure"}`)
+		default:
+			t.Fatalf("unexpected Core request: %s %s", request.Method, request.URL.Path)
+		}
 	}))
 	defer server.Close()
 	vault := &memoryCredentialVault{values: map[string]string{}}
@@ -141,15 +187,226 @@ func TestServiceSecretCreateRollsBackVaultAndFileWhenCoreRejectsMetadata(t *test
 	if code := runner.Run(args, &output, &output); code == application.ExitOK {
 		t.Fatal("Core conflict did not reject secret creation")
 	}
-	if len(vault.values) != 0 {
-		t.Fatalf("failed secret metadata left values in the vault: %#v", vault.values)
+	if len(vault.values) != 1 {
+		t.Fatalf("failed registration did not preserve the OS vault value: %#v", vault.values)
 	}
-	if entries, err := os.ReadDir(filepath.Join(stateDirectory, "secrets")); err == nil && len(entries) != 0 {
-		t.Fatalf("failed secret metadata left staged values: %#v", entries)
-	} else if err != nil && !os.IsNotExist(err) {
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
 		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(secretRoot)
+	if err != nil || len(entries) != 1 || entries[0].Name() != stagedReference.Reference {
+		t.Fatalf("failed registration did not preserve staged value: %#v error=%v", entries, err)
+	}
+	if stagedReference.Reference == "" {
+		t.Fatal("Core did not receive the staged opaque reference")
+	}
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil || len(index.Items) != 1 || index.Items[0].Reference != stagedReference.Reference {
+		t.Fatalf("staged metadata was not recoverable: %+v error=%v", index, err)
+	}
+	indexPath, err := stagedServiceSecretIndexPath(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatalf("staged reference index was not preserved: %v", err)
 	}
 	if strings.Contains(output.String(), secretValue) {
 		t.Fatalf("failed operation leaked secret value: %s", output.String())
 	}
+
+	var listOutput bytes.Buffer
+	listArgs := []string{"service", "secret", "list", "--target", "local", "--service", "server", studioEventsFlag}
+	if code := runner.RunContext(context.Background(), listArgs, &listOutput, &listOutput); code != application.ExitOK {
+		t.Fatalf("list staged registration failed: code=%d output=%s", code, listOutput.String())
+	}
+	for _, expected := range []string{`"pendingRegistrations":[`, stagedReference.Reference, `"state":"pending"`} {
+		if !strings.Contains(listOutput.String(), expected) {
+			t.Fatalf("secret catalog omitted retryable registration %q: %s", expected, listOutput.String())
+		}
+	}
+
+	registered = true
+	var retryOutput bytes.Buffer
+	retryArgs := []string{"service", "secret", "register", "--target", "local", "--service", "server", "--reference", stagedReference.Reference, "--confirm", studioEventsFlag}
+	if code := runner.RunContext(context.Background(), retryArgs, &retryOutput, &retryOutput); code != application.ExitOK {
+		t.Fatalf("retry registration failed: code=%d output=%s", code, retryOutput.String())
+	}
+	if strings.Contains(retryOutput.String(), secretValue) || !strings.Contains(retryOutput.String(), `"service-secret-register-result/v1"`) {
+		t.Fatalf("registration retry returned unsafe output: %s", retryOutput.String())
+	}
+}
+
+func TestServiceSecretRotateStagesNewReferenceWithoutRevokingOld(t *testing.T) {
+	const oldReference = "ssr:v1:00112233445566778899aabbccddeeff"
+	const secretValue = "rotated-secret-marker"
+	root := t.TempDir()
+	useRuntimeCache(t, filepath.Join(root, "cache"))
+	statePath := filepath.Join(root, "core", "core.sqlite")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	vault := &memoryCredentialVault{values: map[string]string{}}
+	var created domain.ServiceSecretReference
+	deleteRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/services/server/secrets":
+			if purpose := request.URL.Query().Get("purpose"); purpose != "" && purpose != "http.auth.bearer" {
+				t.Fatalf("rotation list purpose=%q", request.URL.Query().Get("purpose"))
+			}
+			items := []domain.ServiceSecretReference{{
+				Reference: oldReference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "edge token", State: "active", CreatedAt: "2026-10-17T00:00:00Z",
+			}}
+			if created.Reference != "" {
+				items = append(items, created)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"items": items})
+		case request.Method == http.MethodPost && request.URL.Path == "/api/services/server/secrets":
+			body, err := io.ReadAll(request.Body)
+			if err != nil || strings.Contains(string(body), secretValue) {
+				t.Fatalf("rotation value reached Core metadata: %s error=%v", body, err)
+			}
+			var metadata struct {
+				Reference string `json:"reference"`
+				Purpose   string `json:"purpose"`
+				Label     string `json:"label"`
+			}
+			if err := json.Unmarshal(body, &metadata); err != nil || metadata.Reference == oldReference || metadata.Purpose != "http.auth.bearer" || metadata.Label != "edge token rotated" {
+				t.Fatalf("rotation metadata=%+v error=%v", metadata, err)
+			}
+			created = domain.ServiceSecretReference{Reference: metadata.Reference, ServiceID: "server", Purpose: metadata.Purpose, Label: metadata.Label, State: "active", CreatedAt: "2026-10-17T00:00:01Z"}
+			response.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(response).Encode(created)
+		case request.Method == http.MethodDelete:
+			deleteRequests++
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected Core request %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, Endpoint: server.URL, StatePath: statePath, CredentialRef: "core-token-ref", Bootstrap: domain.CoreBootstrap{SecretRoot: filepath.Join(root, "core", "secrets")}}
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	runner := Runner{
+		Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault,
+		TokenReader: strings.NewReader(secretValue + "\n"), Source: git.Repository{},
+		CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) },
+	}
+	args := []string{"service", "secret", "rotate", "--target", "local", "--service", "server", "--reference", oldReference, "--purpose", "http.auth.bearer", "--label", "edge token rotated", "--secret-stdin", "--confirm", studioEventsFlag}
+	if code := runner.RunContext(context.Background(), args, &stdout, &stderr); code != application.ExitOK {
+		t.Fatalf("rotate failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if deleteRequests != 0 || created.Reference == "" || strings.Contains(stdout.String()+stderr.String(), secretValue) {
+		t.Fatalf("rotation revoked old metadata or leaked value: deletes=%d output=%s%s", deleteRequests, stdout.String(), stderr.String())
+	}
+	for _, expected := range []string{`"schemaVersion":"service-secret-rotation-result/v1"`, oldReference, created.Reference, `"state":"staged"`, `"run.completed"`} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("rotation output omitted %q: %s", expected, stdout.String())
+		}
+	}
+	if value, err := vault.Resolve(context.Background(), domain.ServiceSecretCredentialReference("local", "server", created.Reference)); err != nil || value != secretValue {
+		t.Fatalf("new vault value=%q error=%v", value, err)
+	}
+	if _, err := os.Stat(filepath.Join(secretRoot, created.Reference)); err != nil {
+		t.Fatalf("new reference was not staged for local Core: %v", err)
+	}
+	var listOutput, listError bytes.Buffer
+	listArgs := []string{"service", "secret", "list", "--target", "local", "--service", "server", studioEventsFlag}
+	if code := runner.RunContext(context.Background(), listArgs, &listOutput, &listError); code != application.ExitOK {
+		t.Fatalf("list staged rotation failed: code=%d stdout=%s stderr=%s", code, listOutput.String(), listError.String())
+	}
+	for _, expected := range []string{`"pendingRotations":[`, oldReference, created.Reference, `"state":"staged"`} {
+		if !strings.Contains(listOutput.String(), expected) {
+			t.Fatalf("secret list omitted persisted rotation metadata %q: %s", expected, listOutput.String())
+		}
+	}
+
+	index, err := readStagedServiceSecretIndex(target)
+	if err != nil {
+		t.Fatalf("rotation metadata did not survive reload: %v", err)
+	}
+	var found bool
+	for _, item := range index.Items {
+		if item.Reference == created.Reference {
+			found = item.RotationFrom == oldReference && item.ServiceID == "server" && item.Purpose == "http.auth.bearer"
+		}
+	}
+	if !found {
+		t.Fatalf("persisted index did not retain the staged rotation: %+v", index.Items)
+	}
+	if err := removeStagedServiceSecretReference(target, oldReference); err != nil {
+		t.Fatalf("cleanup after successful old-reference revoke: %v", err)
+	}
+	index, err = readStagedServiceSecretIndex(target)
+	if err != nil {
+		t.Fatalf("rotation metadata could not be reloaded after old-reference revoke: %v", err)
+	}
+	for _, item := range index.Items {
+		if item.Reference == created.Reference && item.RotationFrom != "" {
+			t.Fatalf("completed rotation remained pending after old-reference revoke: %+v", item)
+		}
+	}
+}
+
+func TestMaterializeServiceSecretMountUsesOnlyVaultReferences(t *testing.T) {
+	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
+	const stale = "ssr:v1:ffeeddccbbaa99887766554433221100"
+	const secretValue = "runtime-only-secret-marker"
+	root := t.TempDir()
+	useRuntimeCache(t, filepath.Join(root, "cache"))
+	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, StatePath: filepath.Join(root, "core", "core.sqlite")}
+	secretRoot, err := serviceSecretRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: reference, ServiceID: "server", Purpose: "server.http.auth.credential", Label: "edge credential"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stageServiceSecret(secretRoot, stale, []byte("stale-mount-value")); err != nil {
+		t.Fatal(err)
+	}
+	vault := &memoryCredentialVault{values: map[string]string{
+		domain.ServiceSecretCredentialReference("local", "server", reference): secretValue,
+	}}
+	runner := Runner{CredentialVault: vault}
+	if err := runner.materializeServiceSecretMount(context.Background(), target, true); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(filepath.Join(secretRoot, reference))
+	if err != nil || string(actual) != secretValue {
+		t.Fatalf("materialized secret=%q error=%v", actual, err)
+	}
+	if _, err := os.Stat(filepath.Join(secretRoot, stale)); !os.IsNotExist(err) {
+		t.Fatalf("unindexed stale value survived runtime rematerialization: %v", err)
+	}
+	indexPath, err := stagedServiceSecretIndexPath(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexContents, err := os.ReadFile(indexPath)
+	if err != nil || strings.Contains(string(indexContents), secretValue) {
+		t.Fatalf("secret value reached local reference metadata: %s error=%v", indexContents, err)
+	}
+	if err := os.Remove(filepath.Join(secretRoot, reference)); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.materializeServiceSecretMount(context.Background(), target, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(secretRoot, reference)); err != nil {
+		t.Fatalf("missing runtime material was not restored from the vault: %v", err)
+	}
+}
+
+func useRuntimeCache(t *testing.T, path string) {
+	t.Helper()
+	previous := runtimeUserCacheDir
+	runtimeUserCacheDir = func() (string, error) { return path, nil }
+	t.Cleanup(func() { runtimeUserCacheDir = previous })
 }

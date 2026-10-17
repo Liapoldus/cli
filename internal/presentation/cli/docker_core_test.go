@@ -51,6 +51,54 @@ func TestParseDockerCoreStateRejectsInvalidInspectPayloads(t *testing.T) {
 	}
 }
 
+func TestCoreContainerUsesSeparateReadOnlySecretMount(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeCache(t, filepath.Join(root, "cache"))
+	stateDirectory := filepath.Join(root, "core-state")
+	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	certificateFiles := make([]string, 7)
+	for index := range certificateFiles {
+		certificateFiles[index] = filepath.Join(root, "tls", string(rune('a'+index)))
+		if err := os.MkdirAll(filepath.Dir(certificateFiles[index]), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(certificateFiles[index], []byte("test"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := domain.Target{
+		Name: "local", Transport: domain.TransportLocalProcess, Endpoint: "https://127.0.0.1:18443",
+		RuntimeImage: "liapoldus/core:local", StatePath: filepath.Join(stateDirectory, "core.sqlite"),
+		Bootstrap: domain.CoreBootstrap{
+			ManagementCertificate: certificateFiles[0], ManagementKey: certificateFiles[1], ManagementClientCA: certificateFiles[2],
+			ControlCertificate: certificateFiles[3], ControlKey: certificateFiles[4], ReplicaClientCA: certificateFiles[5],
+			ReplicaServerCA: certificateFiles[6], ControlListen: "0.0.0.0:18181", SecretRoot: filepath.Join(stateDirectory, "secrets"),
+		},
+	}
+	request, err := coreContainerRequest(target, "target-local", "liapoldus-runtime-local", "/runtime/core", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secretMount *domain.DockerMount
+	for index := range request.Mounts {
+		if request.Mounts[index].Target == "/var/lib/liapoldus/secrets" {
+			secretMount = &request.Mounts[index]
+			break
+		}
+	}
+	if secretMount == nil || !secretMount.ReadOnly {
+		t.Fatalf("Core secret mount is missing or writable: %#v", request.Mounts)
+	}
+	if relative, err := filepath.Rel(stateDirectory, secretMount.Source); err != nil || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		t.Fatalf("secret mount source is inside Core state: %q error=%v", relative, err)
+	}
+	if secretMount.Source == filepath.Join(stateDirectory, "secrets") {
+		t.Fatalf("Core secret mount still uses the persistent state volume: %#v", secretMount)
+	}
+}
+
 func TestDescribeCoreMountFailureNamesMountRoleWithoutLeakingPath(t *testing.T) {
 	request := domain.DockerContainerRequest{
 		StagedBinary: "/Users/operator/Library/Caches/Liapoldus/runtime/core-a1b2",

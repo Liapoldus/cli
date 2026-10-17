@@ -1,20 +1,28 @@
 # CLI — Studio configurator contract and runtime TODO
 
-## Local service-secret reference bridge — 2026-10-17
+## Local service-secret reference lifecycle — 2026-10-18
 
 - [x] Added typed Core Management API list/create/revoke calls for service-bound
   opaque references. The API request and response contracts reject unknown
   fields and never contain the secret value.
-- [x] Added `liapoldus service secret list|create|revoke --target local
+- [x] Added `liapoldus service secret list|create|rotate|register|revoke --target local
   --service <id>`. Create accepts secure stdin or a hidden terminal prompt,
   stores the value in the OS keyring, stages it with mode `0600` under the
   target-owned Core `secrets/` directory, and reports only safe reference
-  metadata. Core rejection removes the staged file and vault entry. Revoke
-  requires `--confirm` and clears local copies only after Core accepts it.
-- [x] On 2026-10-17, `GOWORK=off make check` and `GOWORK=off make test-race`
-  passed with `LIAPOLDUS_CORE_OPENAPI` pinned to the current Core source contract.
-- [ ] Studio's typed native secure-input bridge and settings UI remain open;
-  plugins must receive opaque references only.
+  metadata. If Core registration fails, the reference, vault entry and staged
+  value remain available for `service secret register` retry. Revoke requires
+  `--confirm` and clears local copies only after Core accepts it.
+- [x] Rotation creates a separate reference and records its source reference in
+  local metadata. Listing reports staged registration and rotation states;
+  it never revokes the previous secret automatically. Studio verifies that the
+  Project no longer references the old ID and that every required replica is
+  ready on the exact digest and generation before it offers retirement.
+- [x] Studio provides host-owned secure input and a contextual reference picker.
+  Plugin webviews receive only active opaque references and safe metadata; the
+  secret value is sent directly to the local CLI over secure stdin.
+- [x] On 2026-10-18, `GOWORK=off make check` and `GOWORK=off make test-race`
+  passed. The end-to-end local rotation acknowledgement and crash/restart
+  acceptance still require a live Studio/Core runtime and have not been run.
 
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
