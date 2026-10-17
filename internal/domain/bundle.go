@@ -2,6 +2,10 @@ package domain
 
 import "encoding/json"
 
+// WorkingTreeRevision is the explicit source selector accepted only when a
+// caller has captured an immutable local development snapshot.
+const WorkingTreeRevision = "WORKING_TREE"
+
 // File describes one project file included in a configuration bundle.
 type File struct {
 	Path   string `json:"path"`

@@ -25,7 +25,7 @@
 - SQLite migrations и repositories;
 - desired/active/previous/staging generation model;
 - operations, leases, replicas, readiness и audit;
-- plugin-neutral API schemas и generated clients/contracts.
+- service-neutral API schemas и generated clients/contracts.
 
 ## Что удаляется из Core
 

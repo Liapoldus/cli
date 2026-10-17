@@ -27,5 +27,6 @@ func main() {
 	})
 	runner.Artifacts = artifacts.Default()
 	runner.Docker = docker.Default()
+	runner.Snapshots = git.Snapshotter{}
 	os.Exit(runner.RunContext(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }

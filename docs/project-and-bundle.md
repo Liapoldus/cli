@@ -13,7 +13,7 @@ project/
 │       ├── service.yaml         # binding и schema reference
 │       ├── settings.json        # один opaque declarative JSON document
 │       └── links/               # Core-owned link declarations
-├── modules/                     # project files для Studio plugins
+├── modules/                     # project files для StudioPlugins
 ├── schemas/                     # references или project-owned schemas
 ├── environments/
 │   ├── local.yaml
@@ -42,6 +42,14 @@ opaque object array. `.studio`, `.env*`, `*.key`, `*.pem`, `*.secret` и
 5. отказать в `apply`, если revision нельзя однозначно воспроизвести.
 
 `apply` никогда не читает draft из незакоммиченного working tree.
+
+Для разработки Studio действует отдельный local-only контракт `liapoldus dev
+plan|apply`. CLI делает закрытую копию безопасных project files, строит bundle
+из неё и передаёт Core revision `working-tree:<bundle-digest>`. Snapshot
+проверяется на параллельные изменения, symlink и path traversal, содержит
+текущие удаления и untracked файлы, но исключает `.studio/` и secret paths.
+Исходный Git index и checkout не меняются. Операция принимается только для
+`local`; production/remote сохраняет commit-based `plan/apply`.
 
 ## 3. Materialization pipeline
 
@@ -121,3 +129,30 @@ Git, Core settings JSON или operation report.
 Rollback — это повторный `apply` уже известной Git revision либо специальная
 Core rollback operation, если она разрешена API contract. CLI не делает rollback
 по файловому snapshot и не извлекает конфигурацию из SQLite обратно в Git.
+
+## 8. Переход на Services
+
+В текущем CLI Project уже использует `services/<id>/service.yaml`, а локальный
+реестр `artifacts.json` — нейтральные поля `id`, `version`, `platform`, `digest`,
+`path`, `trusted`. Для таких данных переход не требует записи или изменения
+формата: команды `service artifact list|inspect|trust` используют прежний реестр,
+сохраняя регистрации, доверие, digest, binary paths и optional launch arguments.
+Отдельная автоматическая миграция manifest и recovery journal не нужны.
+
+Старые runtime paths `plugins/<id>/{plugin.yaml,service.yaml,settings.json,links/}`
+и `services/<id>/plugin.yaml` отклоняются до delivery с указанием первого пути
+в лексикографическом порядке. CLI не пропускает их молча и не выбирает artifact
+по одному ID. Если внешний Project ещё использует эти пути, оператор переносит
+исходники в каноническую структуру отдельным Git-изменением, сохраняя IDs и точные
+байты settings/links. Manifest должен явно закреплять artifact version/platform/
+digest и runtime endpoints. Нельзя получать эти значения догадкой из старого
+manifest.
+
+Preview — Git diff и `liapoldus runtime plan --project <path> --revision <commit>
+--target <target>` после фиксации Project revision; `liapoldus plan` дополнительно
+проверяет конфигурацию через Core. До запуска recovery сводится к выбору исходной
+Git revision; после apply используется Core rollback согласно его контракту.
+Исторические reports, сохранённые generations и их digests не переписываются.
+Service SDK и Wool сертификаты выпускаются заново с URI
+`spiffe://liapoldus/service/{instanceId}/{replicaId}/{incarnationId}`; старые URI
+не принимаются как runtime identity.

@@ -36,6 +36,6 @@ host-процесс.
 - не обходит Git approval policy;
 - не передаёт незакоммиченные изменения в `apply`;
 - не содержит product-specific runtime logic вместо Core services;
-- не исполняет Studio plugin UI.
+- не исполняет StudioPlugin UI.
 
 Подробная целевая спецификация находится в [`docs/`](docs/index.md).

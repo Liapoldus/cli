@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,54 @@ import (
 
 	"github.com/Liapoldus/cli/internal/domain"
 )
+
+func TestServiceSourcePreservesExactSettingsAndDigest(t *testing.T) {
+	project := t.TempDir()
+	settings := "{\n  \"plugin\": \"application-owned\", \"method\": \"echo.invoke\",\n  \"number\": 1.00, \"text\": \"<>&\"\n}\n"
+	writeFile(t, project, "project.yaml", "id: demo\n")
+	writeFile(t, project, "services/echo/settings.json", settings)
+	gitCommand(t, project, "init")
+	repository := Repository{}
+	services, err := repository.ServiceSettings(context.Background(), project, WorkingTreeRevision)
+	if err != nil || len(services) != 1 || string(services[0].Settings) != settings {
+		t.Fatalf("raw settings changed: %+v, %v", services, err)
+	}
+	files, err := repository.Files(context.Background(), project, WorkingTreeRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, ok := findFile(files, "services/echo/settings.json")
+	if !ok || file.Digest != fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(settings))) || file.Bytes != len(settings) {
+		t.Fatalf("raw file digest changed: %+v", file)
+	}
+}
+
+func TestProjectRejectsRetiredRuntimePaths(t *testing.T) {
+	for _, path := range []string{"plugins/echo/plugin.yaml", "plugins/echo/settings.json", "services/echo/plugin.yaml"} {
+		t.Run(path, func(t *testing.T) {
+			project := t.TempDir()
+			writeFile(t, project, "project.yaml", "id: demo\n")
+			writeFile(t, project, path, "{}\n")
+			gitCommand(t, project, "init")
+			for _, read := range []func(context.Context, string, string) error{
+				func(ctx context.Context, p, r string) error { _, err := (Repository{}).Files(ctx, p, r); return err },
+				func(ctx context.Context, p, r string) error {
+					_, err := (Repository{}).RuntimeArtifacts(ctx, p, r)
+					return err
+				},
+				func(ctx context.Context, p, r string) error {
+					_, err := (Repository{}).ServiceSettings(ctx, p, r)
+					return err
+				},
+				func(ctx context.Context, p, r string) error { _, err := (Repository{}).Links(ctx, p, r); return err },
+			} {
+				if err := read(context.Background(), project, WorkingTreeRevision); err == nil || !strings.Contains(err.Error(), "retired runtime path") {
+					t.Fatalf("retired path silently accepted: %v", err)
+				}
+			}
+		})
+	}
+}
 
 func TestRepositoryReadsFilesFromRequestedRevision(t *testing.T) {
 	project := t.TempDir()

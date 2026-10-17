@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Liapoldus/cli/internal/application"
 	"github.com/Liapoldus/cli/internal/domain"
+	"github.com/Liapoldus/cli/internal/infrastructure/applyqueue"
 )
 
 type Runner struct {
@@ -27,9 +29,13 @@ type Runner struct {
 	TokenReader     io.Reader
 	CoreState       domain.CoreStateFiles
 	CoreFactory     CoreClientFactory
+	Snapshots       domain.ProjectSnapshotter
 	Artifacts       domain.ArtifactRegistry
+	ApplyRecovery   domain.ApplyRecoveryStore
 	Docker          domain.DockerProvider
 }
+
+type studioEventsContextKey struct{}
 
 var Version = "dev"
 
@@ -47,6 +53,7 @@ func (r Runner) Run(args []string, stdout, stderr io.Writer) int {
 func (r Runner) RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	studioMode, cleanArgs := isStudioEventsRequest(args)
 	if studioMode {
+		ctx = context.WithValue(ctx, studioEventsContextKey{}, true)
 		runID := studioRunID()
 		studioStdout := &studioEventWriter{output: stdout, runID: runID, kind: "stdout"}
 		studioStderr := &studioEventWriter{output: stdout, runID: runID, kind: "stderr"}
@@ -89,15 +96,20 @@ func (r Runner) runCommand(ctx context.Context, args []string, stdout, stderr io
 	if len(args) == 0 {
 		return fail(stderr, application.ExitArguments, "command is required")
 	}
+	if containsArgument(args, "--retry-failed") && !(len(args) >= 2 && args[0] == "dev" && args[1] == "apply") {
+		return fail(stderr, application.ExitArguments, "--retry-failed is only valid with dev apply")
+	}
 	switch args[0] {
+	case "dev":
+		return r.development(ctx, args[1:], stdout, stderr)
 	case "version":
 		return encode(stdout, map[string]string{"version": Version})
 	case "target":
 		return r.target(ctx, args[1:], stdout, stderr)
 	case "credential":
 		return r.credential(ctx, args[1:], stdout, stderr)
-	case "plugin":
-		return r.plugin(ctx, args[1:], stdout, stderr)
+	case "service":
+		return r.service(ctx, args[1:], stdout, stderr)
 	case "runtime":
 		return r.runtimePlan(ctx, args[1:], stdout, stderr)
 	case "core":
@@ -133,6 +145,15 @@ func (r Runner) runCommand(ctx context.Context, args []string, stdout, stderr io
 		return r.deploy(ctx, args[1:], true, stdout, stderr)
 	}
 	return fail(stderr, application.ExitArguments, "unsupported command")
+}
+
+func containsArgument(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
 }
 
 const maxTrafficReportBytes = 8 << 20
@@ -306,7 +327,11 @@ func (r Runner) target(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, items)
+		summaries := make([]targetSummary, 0, len(items))
+		for _, item := range items {
+			summaries = append(summaries, summarizeTarget(item))
+		}
+		return encode(stdout, summaries)
 	case "inspect":
 		if len(args) < 2 {
 			return fail(stderr, application.ExitArguments, "target name is required")
@@ -315,7 +340,7 @@ func (r Runner) target(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, item)
+		return encode(stdout, summarizeTarget(item))
 	case "add":
 		if len(args) < 2 {
 			return fail(stderr, application.ExitArguments, "target name is required")
@@ -337,7 +362,7 @@ func (r Runner) target(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err := registry.Add(item); err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, item)
+		return encode(stdout, summarizeTarget(item))
 	case "test":
 		if len(args) < 2 {
 			return fail(stderr, application.ExitArguments, "target name is required")
@@ -394,7 +419,7 @@ func (r Runner) testTarget(ctx context.Context, target domain.Target, stdout, st
 	}
 	status, err := client.Health(ctx)
 	reachable := err == nil && status >= 200 && status < 300
-	if encode(stdout, map[string]any{"target": target.Name, "endpoint": target.Endpoint, "reachable": reachable, "status": status}) != application.ExitOK {
+	if encode(stdout, map[string]any{"target": target.Name, "reachable": reachable, "status": status}) != application.ExitOK {
 		return application.ExitOperation
 	}
 	if !reachable {
@@ -446,10 +471,13 @@ func (r Runner) operation(ctx context.Context, args []string, stdout, stderr io.
 	if args[0] == "get" {
 		result, err = service.Get(ctx, args[1])
 	} else {
-		result, err = service.Watch(ctx, args[1], 250*time.Millisecond, 60*time.Second)
+		result, err = service.WatchObserved(ctx, args[1], 250*time.Millisecond, 60*time.Second, studioOperationObserver(ctx, stdout, options.target))
 	}
-	if len(result.Raw) > 0 {
-		_ = json.NewEncoder(stdout).Encode(json.RawMessage(result.Raw))
+	if result.ID != "" {
+		_ = encode(stdout, operationSummary{
+			OperationID: result.ID, Target: options.target, State: result.State,
+			ReplicaOutcomes: result.ReplicaOutcomes,
+		})
 	}
 	if err != nil {
 		var stateError application.OperationStateError
@@ -476,6 +504,12 @@ func (r Runner) operation(ctx context.Context, args []string, stdout, stderr io.
 func (r Runner) core(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return fail(stderr, application.ExitArguments, "core subcommand is required")
+	}
+	if args[0] == "binary" {
+		return r.coreBinary(ctx, args[1:], stdout, stderr)
+	}
+	if args[0] == "settings" {
+		return r.coreSettings(ctx, args[1:], stdout, stderr)
 	}
 	optionArgs := args[1:]
 	if args[0] == "database" && len(args) >= 2 {
@@ -546,6 +580,94 @@ func (r Runner) core(ctx context.Context, args []string, stdout, stderr io.Write
 	default:
 		return fail(stderr, application.ExitArguments, "unsupported core subcommand")
 	}
+}
+
+func (r Runner) coreBinary(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || (args[0] != "inspect" && args[0] != "update") {
+		return fail(stderr, application.ExitArguments, "core binary inspect|update is required")
+	}
+	options, err := parseOptions(args[1:])
+	if err != nil {
+		return fail(stderr, application.ExitArguments, err.Error())
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(stderr, application.ExitOperation, err.Error())
+	}
+	if args[0] == "update" && (options.target != "local" || !options.confirm || options.digest == "") {
+		return fail(stderr, application.ExitArguments, "core binary update requires --target local, exact --digest, and --confirm")
+	}
+	platform, digest, size, err := inspectCoreBinary(options.path)
+	if err != nil {
+		return fail(stderr, application.ExitValidation, err.Error())
+	}
+	if args[0] == "inspect" {
+		return encode(stdout, map[string]any{"digest": digest, "platform": platform, "sizeBytes": size})
+	}
+	if options.digest != digest {
+		return fail(stderr, application.ExitArguments, "Core binary digest changed after review")
+	}
+	registry := r.registry(options.targets)
+	target, err := registry.Find(options.target)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if target.Transport != domain.TransportLocalProcess || target.RuntimePlatform != platform {
+		return fail(stderr, application.ExitValidation, "Core binary platform does not match the local target")
+	}
+	previousTarget := target
+	target.CoreBinary = filepath.Clean(options.path)
+	target.CoreBinaryDigest = digest
+	started, err := r.startDockerCore(ctx, target, runtimeLabel("target", target.Name))
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("Core binary update failed; previous target configuration was preserved. The existing Core may be stopped; run `liapoldus core start --target %s` to recover it: %v", previousTarget.Name, err))
+	}
+	if err := registry.Add(target); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stopErr := r.Docker.StopContainer(cleanupCtx, coreContainer)
+		removeErr := r.Docker.RemoveContainer(cleanupCtx, coreContainer)
+		message := fmt.Sprintf("Core binary was started, but target registry could not commit the update; the previous target configuration remains authoritative: %v", err)
+		if stopErr != nil || removeErr != nil {
+			message += fmt.Sprintf("; candidate cleanup incomplete (stop: %v, remove: %v)", stopErr, removeErr)
+		} else {
+			message += "; candidate Core container was stopped and removed"
+		}
+		return fail(stderr, application.ExitTarget, message)
+	}
+	return encode(stdout, map[string]any{"configured": true, "digest": digest, "platform": platform, "target": target.Name, "running": true, "created": started.Created, "updated": started.Updated})
+}
+
+func inspectCoreBinary(path string) (string, string, int64, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if !filepath.IsAbs(path) || path == string(filepath.Separator) || strings.ContainsAny(path, "\x00\r\n") {
+		return "", "", 0, errors.New("an absolute Core binary path is required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		return "", "", 0, errors.New("Core binary must be an existing executable regular file")
+	}
+	file, err := elf.Open(path)
+	if err != nil {
+		return "", "", 0, errors.New("Core binary must be a Linux ELF executable")
+	}
+	defer file.Close()
+	platform := ""
+	switch file.Machine {
+	case elf.EM_X86_64:
+		platform = "linux/amd64"
+	case elf.EM_AARCH64:
+		platform = "linux/arm64"
+	default:
+		return "", "", 0, errors.New("Core binary architecture is unsupported")
+	}
+	if file.Class != elf.ELFCLASS64 || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
+		return "", "", 0, errors.New("Core binary must be a 64-bit Linux executable")
+	}
+	digest, err := digestFile(path)
+	if err != nil {
+		return "", "", 0, errors.New("Core binary digest could not be calculated")
+	}
+	return platform, digest, info.Size(), nil
 }
 
 func (r Runner) localResult(value any, err error, stdout, stderr io.Writer) int {
@@ -633,6 +755,82 @@ func (r Runner) deploy(ctx context.Context, args []string, apply bool, stdout, s
 	return encode(stdout, map[string]any{"revision": bundle.Revision, "digest": bundle.Digest, "response": json.RawMessage(result)})
 }
 
+func (r Runner) development(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply") {
+		return fail(stderr, application.ExitArguments, "usage: liapoldus dev plan|apply --project <path> --target local [--confirm]")
+	}
+	apply := args[0] == "apply"
+	options, err := parseOptions(args[1:])
+	if err != nil {
+		return fail(stderr, application.ExitArguments, err.Error())
+	}
+	if options.revision != "" {
+		return fail(stderr, application.ExitArguments, "dev always captures the current working tree; --revision is not accepted")
+	}
+	if options.target != "local" {
+		return fail(stderr, application.ExitArguments, "development working-tree operations require --target local")
+	}
+	if apply && !options.confirm {
+		return fail(stderr, application.ExitArguments, "development apply requires --confirm")
+	}
+	if options.retryFailed && !apply {
+		return fail(stderr, application.ExitArguments, "--retry-failed is only valid with dev apply")
+	}
+	connection, err := r.credentials(ctx, options)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if r.CoreFactory == nil {
+		return fail(stderr, application.ExitTarget, "Core Management API client is not configured")
+	}
+	client, err := r.CoreFactory(connection)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	recovery := r.ApplyRecovery
+	if recovery == nil {
+		recovery, err = applyqueue.Default()
+		if err != nil {
+			return fail(stderr, application.ExitOperation, err.Error())
+		}
+	}
+	service := application.DevelopmentDeploymentService{
+		Source: r.Source, Core: client, Snapshots: r.Snapshots,
+		Recovery: recovery, RecoveryTargetKey: applyqueue.TargetKey(options.target, connection.Endpoint),
+		OnOperationState: studioOperationObserver(ctx, stdout, "local"),
+	}
+	if apply {
+		bundle, response, err := service.Apply(ctx, options.project, options.target, options.expectedGeneration, options.confirm, options.wait, options.retryFailed, options.idempotencyKey)
+		if err != nil {
+			if len(response.CoreResponse) > 0 {
+				_ = encode(stdout, summarizeDevelopmentApply(bundle, response))
+			}
+			return fail(stderr, deploymentCode(err), err.Error())
+		}
+		return encode(stdout, summarizeDevelopmentApply(bundle, response))
+	}
+	bundle, response, err := service.Plan(ctx, options.project, options.target, options.expectedGeneration)
+	if err != nil {
+		return fail(stderr, deploymentCode(err), err.Error())
+	}
+	return encode(stdout, map[string]any{"revision": bundle.Revision, "digest": bundle.Digest, "response": json.RawMessage(response)})
+}
+
+func studioEventsEnabled(ctx context.Context) bool {
+	enabled, _ := ctx.Value(studioEventsContextKey{}).(bool)
+	return enabled
+}
+
+func studioOperationObserver(ctx context.Context, output io.Writer, target string) func(string, string) {
+	if !studioEventsEnabled(ctx) {
+		return nil
+	}
+	return func(operationID, state string) {
+		// Keep the renderer contract limited to safe Core operation metadata.
+		_ = encode(output, map[string]string{"operationId": operationID, "target": target, "state": state})
+	}
+}
+
 func (r Runner) credentials(ctx context.Context, options commandOptions) (domain.CoreConnection, error) {
 	connection := domain.CoreConnection{Endpoint: options.endpoint, CAFile: options.caFile, ClientCertFile: options.clientCertFile, ClientKeyFile: options.clientKeyFile, ServerName: options.serverName}
 	if options.tokenStdin {
@@ -696,11 +894,13 @@ func (r Runner) credentials(ctx context.Context, options commandOptions) (domain
 type commandOptions struct {
 	project, revision, target, output, endpoint, idempotencyKey, targets        string
 	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint string
-	service                                                                     string
+	service, resource, requestFile                                              string
+	page, action, artifactFile, contentType, metadataFile, ifMatch              string
 	expectedGeneration                                                          *int64
 	approvalEvidence                                                            string
 	caFile, clientCertFile, clientKeyFile, serverName                           string
-	confirm, wait, tokenStdin, replace                                          bool
+	confirm, wait, tokenStdin, replace, retryFailed                             bool
+	projectExplicit                                                             bool
 }
 
 func parseOptions(args []string) (commandOptions, error) {
@@ -719,6 +919,10 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.wait = true
 			continue
 		}
+		if arg == "--retry-failed" {
+			options.retryFailed = true
+			continue
+		}
 		if arg == "--token-stdin" {
 			options.tokenStdin = true
 			continue
@@ -731,12 +935,15 @@ func parseOptions(args []string) (commandOptions, error) {
 		switch arg {
 		case "--project":
 			options.project = value
+			options.projectExplicit = true
 		case "--revision":
 			options.revision = value
 		case "--target":
 			options.target = value
 		case "--output":
 			options.output = value
+		case "--request-file":
+			options.requestFile = value
 		case "--endpoint":
 			options.endpoint = value
 		case "--idempotency-key":
@@ -777,6 +984,20 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.peerEndpoint = value
 		case "--service":
 			options.service = value
+		case "--resource":
+			options.resource = value
+		case "--page":
+			options.page = value
+		case "--action":
+			options.action = value
+		case "--artifact-file":
+			options.artifactFile = value
+		case "--content-type":
+			options.contentType = value
+		case "--metadata-file":
+			options.metadataFile = value
+		case "--if-match":
+			options.ifMatch = value
 		default:
 			return commandOptions{}, fmt.Errorf("unsupported argument %q", arg)
 		}

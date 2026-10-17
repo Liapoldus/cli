@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestCLIDoesNotContainPluginRESTClient(t *testing.T) {
+func TestCLIDoesNotContainServiceRESTClient(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	var forbidden []string
@@ -16,7 +16,7 @@ func TestCLIDoesNotContainPluginRESTClient(t *testing.T) {
 		if err != nil || info == nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
 			return err
 		}
-		if filepath.Base(path) == "plugin_architecture_test.go" {
+		if filepath.Base(path) == "service_architecture_test.go" {
 			return nil
 		}
 		body, readErr := os.ReadFile(path)
@@ -24,7 +24,12 @@ func TestCLIDoesNotContainPluginRESTClient(t *testing.T) {
 			return readErr
 		}
 		text := string(body)
-		for _, marker := range []string{"plugin-sdk", "/_liapoldus/v1/manifest", "/_liapoldus/v1/config-schema", "/_liapoldus/v1/reload"} {
+		for _, marker := range []string{
+			"github.com/Liapoldus/service-sdk",
+			"github.com/Liapoldus/wool",
+			"/_liapoldus/v1",
+			"/_liapoldus/",
+		} {
 			if strings.Contains(text, marker) {
 				forbidden = append(forbidden, path+":"+marker)
 			}
@@ -35,6 +40,6 @@ func TestCLIDoesNotContainPluginRESTClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(forbidden) > 0 {
-		t.Fatalf("CLI contains a direct plugin REST path: %v", forbidden)
+		t.Fatalf("CLI contains a direct service REST path: %v", forbidden)
 	}
 }

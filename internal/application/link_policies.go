@@ -13,9 +13,9 @@ import (
 
 // LinkPolicies converts canonical project links into generic Core policy
 // intents. Core receives no product method names or payload schemas; those
-// remain owned by the plugin manifests and pluginprotocol data plane.
-func LinkPolicies(rawLinks []json.RawMessage) ([]domain.PluginLinkPolicyRequest, error) {
-	policies := make([]domain.PluginLinkPolicyRequest, 0, len(rawLinks))
+// remain owned by the service manifests and Wool data plane.
+func LinkPolicies(rawLinks []json.RawMessage) ([]domain.ServiceLinkPolicyRequest, error) {
+	policies := make([]domain.ServiceLinkPolicyRequest, 0, len(rawLinks))
 	for index, raw := range rawLinks {
 		var link struct {
 			Caller    string `json:"caller"`
@@ -35,14 +35,14 @@ func LinkPolicies(rawLinks []json.RawMessage) ([]domain.PluginLinkPolicyRequest,
 		if strings.TrimSpace(link.Caller) == "" || strings.TrimSpace(link.Target) == "" || link.Caller == link.Target {
 			return nil, fmt.Errorf("link %d: caller and target are required and must differ", index)
 		}
-		policy := domain.PluginLinkPolicyRequest{
+		policy := domain.ServiceLinkPolicyRequest{
 			CallerInstanceID: link.Caller,
 			TargetInstanceID: link.Target,
-			Rules: []domain.PluginLinkRule{{
+			Rules: []domain.ServiceLinkRule{{
 				PlacementRule:     "remote",
 				Carrier:           "tcp",
 				Weight:            100,
-				RequiredContracts: []domain.PluginLinkContractRange{},
+				RequiredContracts: []domain.ServiceLinkContractRange{},
 			}},
 		}
 		if link.Transport == "unix" {

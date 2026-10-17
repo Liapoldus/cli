@@ -191,6 +191,9 @@ func validateEndpoint(target domain.Target) error {
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("target %q has invalid HTTP(S) endpoint", target.Name)
 	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("target %q endpoint must not contain credentials, query parameters or fragments", target.Name)
+	}
 	if parsed.Scheme == "http" && (target.CAFile != "" || target.ClientCertFile != "" || target.ClientKeyFile != "" || target.ServerName != "") {
 		return fmt.Errorf("target %q has TLS settings for an HTTP endpoint", target.Name)
 	}

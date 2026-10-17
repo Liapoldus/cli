@@ -22,13 +22,19 @@ import (
 	"github.com/Liapoldus/cli/internal/domain"
 )
 
-func (r Runner) plugin(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func (r Runner) service(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return fail(stderr, application.ExitArguments, "plugin artifact|inspect|manifest|schema|status is required")
+		return fail(stderr, application.ExitArguments, "service artifact|inspect|manifest|schema|status|admin-surface|resource is required")
+	}
+	if args[0] == "admin-surface" {
+		return r.serviceAdminSurface(ctx, args[1:], stdout, stderr)
+	}
+	if args[0] == "resource" {
+		return r.serviceResource(ctx, args[1:], stdout, stderr)
 	}
 	if args[0] != "artifact" {
 		if len(args) < 2 {
-			return fail(stderr, application.ExitArguments, "plugin id is required")
+			return fail(stderr, application.ExitArguments, "service id is required")
 		}
 		options, err := parseOptions(args[2:])
 		if err != nil {
@@ -53,16 +59,16 @@ func (r Runner) plugin(ctx context.Context, args []string, stdout, stderr io.Wri
 			view = "status"
 		}
 		if view != "manifest" && view != "schema" && view != "status" {
-			return fail(stderr, application.ExitArguments, "unsupported plugin command")
+			return fail(stderr, application.ExitArguments, "unsupported service command")
 		}
-		body, err := client.PluginMetadata(ctx, args[1], view)
+		body, err := client.ServiceMetadata(ctx, args[1], view)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		return encode(stdout, json.RawMessage(body))
 	}
 	if len(args) < 2 {
-		return fail(stderr, application.ExitArguments, "plugin artifact inspect|register|trust|list|remove is required")
+		return fail(stderr, application.ExitArguments, "service artifact inspect|register|trust|list|remove is required")
 	}
 	if r.Artifacts == nil {
 		return fail(stderr, application.ExitTarget, "artifact registry is not configured")
@@ -77,16 +83,20 @@ func (r Runner) plugin(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, items)
+		summaries := make([]artifactSummary, 0, len(items))
+		for _, item := range items {
+			summaries = append(summaries, summarizeArtifact(item))
+		}
+		return encode(stdout, summaries)
 	case "inspect":
 		artifact, err := r.findArtifact(options)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, artifact)
+		return encode(stdout, summarizeArtifact(artifact))
 	case "register":
 		if options.id == "" || options.version == "" || options.platform == "" || options.path == "" {
-			return fail(stderr, application.ExitArguments, "plugin artifact register requires --id, --version, --platform and --path")
+			return fail(stderr, application.ExitArguments, "service artifact register requires --id, --version, --platform and --path")
 		}
 		path, err := filepath.Abs(options.path)
 		if err != nil {
@@ -110,10 +120,10 @@ func (r Runner) plugin(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err := r.Artifacts.Register(artifact); err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, artifact)
+		return encode(stdout, summarizeArtifact(artifact))
 	case "trust":
 		if options.id == "" || options.version == "" || options.platform == "" || options.digest == "" {
-			return fail(stderr, application.ExitArguments, "plugin artifact trust requires --id, --version, --platform and --digest")
+			return fail(stderr, application.ExitArguments, "service artifact trust requires --id, --version, --platform and --digest")
 		}
 		if err := r.Artifacts.Trust(options.id, options.version, options.platform, options.digest); err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
@@ -122,18 +132,174 @@ func (r Runner) plugin(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, artifact)
+		return encode(stdout, summarizeArtifact(artifact))
 	case "remove":
 		if options.id == "" || options.version == "" || options.platform == "" {
-			return fail(stderr, application.ExitArguments, "plugin artifact remove requires --id, --version and --platform")
+			return fail(stderr, application.ExitArguments, "service artifact remove requires --id, --version and --platform")
 		}
 		if err := r.Artifacts.Remove(options.id, options.version, options.platform); err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		return encode(stdout, map[string]any{"removed": true, "id": options.id, "version": options.version, "platform": options.platform})
 	default:
-		return fail(stderr, application.ExitArguments, "unsupported plugin artifact subcommand")
+		return fail(stderr, application.ExitArguments, "unsupported service artifact subcommand")
 	}
+}
+
+func (r Runner) serviceAdminSurface(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) < 2 || args[0] != "inspect" || strings.TrimSpace(args[1]) == "" {
+		return fail(stderr, application.ExitArguments, "service admin-surface inspect <service-id> --target local is required")
+	}
+	options, err := parseOptions(args[2:])
+	if err != nil {
+		return fail(stderr, application.ExitArguments, err.Error())
+	}
+	if options.target != "local" {
+		return fail(stderr, application.ExitArguments, "local --target is required for service admin-surface inspection")
+	}
+	connection, err := r.credentials(ctx, options)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if r.CoreFactory == nil {
+		return fail(stderr, application.ExitTarget, "Core client is not configured")
+	}
+	client, err := r.CoreFactory(connection)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	reader, ok := client.(domain.ServiceAdminSurfaceReader)
+	if !ok {
+		return fail(stderr, application.ExitTarget, "Core client does not support service admin-surface inspection")
+	}
+	surface, err := reader.ReadServiceAdminSurface(ctx, args[1])
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if !validServiceAdminSurface(surface.Descriptor) || !validServiceAdminSurfaceDigest(surface.Digest, surface.Descriptor) {
+		return fail(stderr, application.ExitTarget, "Core returned an invalid service admin-surface descriptor")
+	}
+	return encode(stdout, map[string]any{"serviceId": args[1], "digest": surface.Digest, "descriptor": surface.Descriptor})
+}
+
+func (r Runner) serviceResource(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) < 2 || strings.TrimSpace(args[1]) == "" || (args[0] != "list" && args[0] != "publish") {
+		return fail(stderr, application.ExitArguments, "service resource list|publish <service-id> is required")
+	}
+	options, err := parseOptions(args[2:])
+	if err != nil {
+		return fail(stderr, application.ExitArguments, err.Error())
+	}
+	if options.target != "local" {
+		return fail(stderr, application.ExitArguments, "local --target is required for service resource actions")
+	}
+	if r.CoreFactory == nil {
+		return fail(stderr, application.ExitTarget, "Core client is not configured")
+	}
+	connection, err := r.credentials(ctx, options)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	client, err := r.CoreFactory(connection)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if args[0] == "publish" {
+		return r.publishServiceResource(ctx, client, args[1], options, stdout, stderr)
+	}
+	if options.resource == "" {
+		return fail(stderr, application.ExitArguments, "--resource is required")
+	}
+	manifest, err := client.ServiceMetadata(ctx, args[1], "manifest")
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	query, err := serviceResourceQuery(manifest, options.resource)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	response, err := client.ServiceAdminQuery(ctx, args[1], query.pageID, query.resourceID)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	items, err := sanitizeServiceResourceItems(response, query.valuePointer, query.labelPointer)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	return encode(stdout, map[string]any{"resourceId": options.resource, "items": items})
+}
+
+func (r Runner) publishServiceResource(ctx context.Context, client domain.CoreClient, serviceID string, options commandOptions, stdout, stderr io.Writer) int {
+	if options.page == "" || options.action == "" || options.artifactFile == "" || options.contentType == "" || options.metadataFile == "" || options.idempotencyKey == "" || !options.projectExplicit {
+		return fail(stderr, application.ExitArguments, "service resource publish requires --page, --action, --artifact-file, --content-type, --metadata-file, --idempotency-key and --project")
+	}
+	publisher, ok := client.(domain.ServiceArtifactPublisher)
+	if !ok {
+		return fail(stderr, application.ExitTarget, "Core client does not support service artifact actions")
+	}
+	artifactPath, artifactInfo, err := resolveProjectFile(options.project, options.artifactFile)
+	if err != nil {
+		return fail(stderr, application.ExitArguments, "artifact file: "+err.Error())
+	}
+	metadataPath, metadataInfo, err := resolveProjectFile(options.project, options.metadataFile)
+	if err != nil {
+		return fail(stderr, application.ExitArguments, "metadata file: "+err.Error())
+	}
+	if !artifactInfo.Mode().IsRegular() || !metadataInfo.Mode().IsRegular() {
+		return fail(stderr, application.ExitArguments, "artifact and metadata must be regular project files")
+	}
+	if metadataInfo.Size() > 1<<20 {
+		return fail(stderr, application.ExitArguments, "metadata file exceeds the 1 MiB safety limit")
+	}
+	metadata, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "metadata file: "+err.Error())
+	}
+	artifact, err := os.Open(artifactPath)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "artifact file: "+err.Error())
+	}
+	defer artifact.Close()
+	result, err := publisher.PublishServiceArtifact(ctx, domain.ServiceArtifactPublication{
+		ServiceID: serviceID, PageID: options.page, ActionID: options.action,
+		Metadata: json.RawMessage(metadata), ContentType: options.contentType, Artifact: artifact,
+		IdempotencyKey: options.idempotencyKey, IfMatch: options.ifMatch,
+	})
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	return encode(stdout, json.RawMessage(result))
+}
+
+func resolveProjectFile(projectRoot, filePath string) (string, os.FileInfo, error) {
+	root, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return "", nil, err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", nil, err
+	}
+	if !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(root, filePath)
+	}
+	resolved, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return "", nil, err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", nil, err
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", nil, errors.New("file must remain inside the project directory")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", nil, err
+	}
+	return resolved, info, nil
 }
 
 func (r Runner) findArtifact(options commandOptions) (domain.Artifact, error) {
@@ -161,7 +327,7 @@ func (r Runner) runtimePlan(ctx context.Context, args []string, stdout, stderr i
 	if err != nil {
 		return fail(stderr, application.ExitTarget, err.Error())
 	}
-	return encode(stdout, plan)
+	return encode(stdout, summarizeRuntimePlan(plan))
 }
 
 func (r Runner) runtimeOperation(ctx context.Context, action string, args []string, stdout, stderr io.Writer) int {
@@ -184,6 +350,12 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 	}
 	label := runtimeLabel("target", target.Name)
 	status := r.Docker.Probe(ctx)
+	if action == "start" || action == "restart" {
+		status, err = ensureDockerProvider(ctx, r.Docker)
+		if err != nil {
+			return fail(stderr, application.ExitTarget, err.Error())
+		}
+	}
 	if !status.Available {
 		code := status.ErrorCode
 		if code == "" {
@@ -193,6 +365,9 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 	}
 	switch action {
 	case "start":
+		if options.service != "" {
+			return r.runtimeServiceOperation(ctx, action, options.service, label, options, stdout, stderr)
+		}
 		if strings.TrimSpace(target.RuntimeImage) == "" {
 			return fail(stderr, application.ExitTarget, "runtime_image_missing")
 		}
@@ -210,6 +385,14 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 				}
 			}
 		}
+		existing, existingErr := r.Docker.ListContainers(ctx, label)
+		if existingErr != nil {
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("inspect existing runtime: %v", existingErr))
+		}
+		cleaned, reconcileErr := reconcileStoppedRuntimeServices(ctx, r.Docker, existing, plan)
+		if reconcileErr != nil {
+			return fail(stderr, application.ExitTarget, reconcileErr.Error())
+		}
 		started := make([]string, 0, len(plan.Services))
 		keepRuntime := false
 		defer func() {
@@ -222,11 +405,11 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 			}
 			_ = r.Docker.NetworkRemove(context.Background(), runtimeNetwork(label))
 		}()
-		coreCreated, startCoreErr := r.startDockerCore(ctx, target, label)
+		coreStart, startCoreErr := r.startDockerCore(ctx, target, label)
 		if startCoreErr != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core start: %v", startCoreErr))
 		}
-		if coreCreated {
+		if coreStart.Created && !coreStart.Updated {
 			started = append(started, coreContainer)
 		}
 		for _, service := range plan.Services {
@@ -266,26 +449,21 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		registrations := make([]json.RawMessage, 0, len(plan.Services))
 		for _, service := range plan.Services {
 			artifact := service.Artifact
-			// A plugin owns its SDK lifecycle registration. The CLI must never
-			// probe the plugin REST surface or manufacture a registration from
-			// stale local metadata. Wait until Core has observed the replica and
-			// can read its live SDK metadata through the Core control plane.
-			if err := waitForCorePlugin(ctx, client, artifact.ID, 30*time.Second); err != nil {
-				for _, name := range started {
-					_ = r.Docker.StopContainer(ctx, name)
-					_ = r.Docker.RemoveContainer(ctx, name)
-				}
-				return fail(stderr, application.ExitTarget, fmt.Sprintf("Core metadata for %s: %v", artifact.ID, err))
-			}
-			metadata := domain.PluginRegistrationMetadata{
+			metadata := domain.ServiceRegistrationMetadata{
 				ArtifactID: artifact.ID, ArtifactVersion: artifact.Version, Digest: artifact.Digest,
 				InstanceID: artifact.ID, ReplicaID: artifact.ID,
 				ControlEndpoint: service.ControlEndpoint,
 				PeerEndpoint:    service.PeerEndpoint,
 				RuntimeStatus:   "started",
 			}
-			body, registerErr := client.RegisterPlugin(ctx, metadata)
+			// The control-plane sequence is intentional: after Docker starts the
+			// binary, CLI submits only its verified artifact/runtime claim. Core
+			// validates the SDK lease and fetches live SDK metadata itself. CLI
+			// never probes a Service endpoint or asks Core for metadata before
+			// submitting the claim.
+			body, registerErr := registerRuntimeService(ctx, client, metadata, 60*time.Second)
 			if registerErr != nil {
+				emitRuntimeStartupLogs(ctx, stderr, r.Docker, started)
 				for _, name := range started {
 					_ = r.Docker.StopContainer(ctx, name)
 					_ = r.Docker.RemoveContainer(ctx, name)
@@ -324,11 +502,14 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		}
 		applyResponse, applyErr := client.Apply(ctx, applyRequest, idempotencyKey)
 		if applyErr != nil {
-			return fail(stderr, application.ExitTarget, fmt.Sprintf("apply runtime configuration through Core: %v", applyErr))
+			keepRuntime = true
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("apply runtime configuration through Core: %v; containers remain running so Studio can inspect Core-backed metadata and retry after correcting settings", applyErr))
 		}
 		for _, operationID := range applyResponse.OperationIDs {
-			if _, waitErr := (application.OperationService{Core: client}).Watch(ctx, operationID, 250*time.Millisecond, 60*time.Second); waitErr != nil {
-				return fail(stderr, application.ExitOperation, fmt.Sprintf("Core configuration operation: %v", waitErr))
+			observer := studioOperationObserver(ctx, stdout, target.Name)
+			if _, waitErr := (application.OperationService{Core: client}).WatchObserved(ctx, operationID, 250*time.Millisecond, 60*time.Second, observer); waitErr != nil {
+				keepRuntime = true
+				return fail(stderr, application.ExitOperation, fmt.Sprintf("Core configuration operation: %v; containers remain running so Studio can inspect metadata and retry", waitErr))
 			}
 		}
 		policies, policyErr := application.LinkPolicies(bundle.Links)
@@ -340,13 +521,22 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 			if keyErr != nil {
 				return fail(stderr, application.ExitTarget, fmt.Sprintf("create link operation key: %v", keyErr))
 			}
-			if _, linkErr := client.EnsurePluginLink(ctx, policy, policyKey); linkErr != nil {
-				return fail(stderr, application.ExitTarget, fmt.Sprintf("apply Core link policy %s->%s: %v", policy.CallerInstanceID, policy.TargetInstanceID, linkErr))
+			if _, linkErr := client.EnsureServiceLink(ctx, policy, policyKey); linkErr != nil {
+				keepRuntime = true
+				return fail(stderr, application.ExitTarget, fmt.Sprintf("apply Core link policy %s->%s: %v; containers remain running so Studio can inspect metadata and retry", policy.CallerInstanceID, policy.TargetInstanceID, linkErr))
 			}
 		}
 		keepRuntime = true
-		return encode(stdout, map[string]any{"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.completed", "operationId": label, "network": runtimeNetwork(label), "services": started, "core": registrations})
+		return encode(stdout, map[string]any{
+			"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.completed", "operationId": label,
+			"network": runtimeNetwork(label), "services": started, "core": registrations,
+			"coreCreated": coreStart.Created, "coreUpdated": coreStart.Updated,
+			"cleanedStaleContainers": cleaned,
+		})
 	case "stop", "restart":
+		if options.service != "" {
+			return r.runtimeServiceOperation(ctx, action, options.service, label, options, stdout, stderr)
+		}
 		names, err := r.stopDockerRuntime(ctx, target, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
@@ -360,7 +550,19 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, map[string]any{"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.status", "operationId": label, "containers": names})
+		containers := make([]dockerInspectSummary, 0, len(names))
+		for _, name := range names {
+			body, inspectErr := r.Docker.Inspect(ctx, name)
+			if inspectErr != nil {
+				return fail(stderr, application.ExitTarget, "Docker container state could not be verified")
+			}
+			summary, summaryErr := safeDockerInspectSummary(body, name)
+			if summaryErr != nil {
+				return fail(stderr, application.ExitTarget, summaryErr.Error())
+			}
+			containers = append(containers, summary)
+		}
+		return encode(stdout, map[string]any{"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.status", "operationId": label, "containers": containers})
 	case "logs", "inspect":
 		if options.service == "" {
 			return fail(stderr, application.ExitArguments, "--service is required")
@@ -378,6 +580,13 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
+		if action == "inspect" {
+			summary, summaryErr := safeDockerInspectSummary(body, name)
+			if summaryErr != nil {
+				return fail(stderr, application.ExitTarget, summaryErr.Error())
+			}
+			return encode(stdout, summary)
+		}
 		_, _ = stdout.Write(body)
 		if len(body) == 0 || body[len(body)-1] != '\n' {
 			_, _ = stdout.Write([]byte{'\n'})
@@ -388,6 +597,607 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 	}
 }
 
+// reconcileStoppedRuntimeServices removes only known, target-labeled service
+// containers that are conclusively stopped. A live service, Core container,
+// unknown container name, or unrecognized state blocks Start without deleting
+// anything. Core lifecycle remains owned by startDockerCore.
+func reconcileStoppedRuntimeServices(ctx context.Context, docker domain.DockerProvider, existing []string, plan domain.RuntimePlan) ([]string, error) {
+	if len(existing) == 0 {
+		return nil, nil
+	}
+	expected := make(map[string]struct{}, len(plan.Services))
+	for _, service := range plan.Services {
+		expected["liapoldus-"+service.Artifact.ID] = struct{}{}
+	}
+	type containerState struct {
+		name  string
+		state string
+	}
+	states := make([]containerState, 0, len(existing))
+	for _, name := range existing {
+		if name == coreContainer {
+			continue
+		}
+		if _, ok := expected[name]; !ok {
+			return nil, runtimeStartConflict()
+		}
+		body, err := docker.Inspect(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("runtime_exists: could not safely inspect target container %s: %w", name, err)
+		}
+		state, err := parseRuntimeContainerState(body, name)
+		if err != nil {
+			return nil, err
+		}
+		if state.Running || state.Status == "running" || state.Status == "paused" || state.Status == "restarting" {
+			return nil, runtimeStartConflict()
+		}
+		if state.Status != "created" && state.Status != "exited" && state.Status != "dead" {
+			return nil, fmt.Errorf("runtime_exists: container %s has state %q; inspect this target before retrying", name, state.Status)
+		}
+		states = append(states, containerState{name: name, state: state.Status})
+	}
+	cleaned := make([]string, 0, len(states))
+	for _, item := range states {
+		if err := docker.RemoveContainer(ctx, item.name); err != nil {
+			return cleaned, fmt.Errorf("remove stale target container %s (%s): %w", item.name, item.state, err)
+		}
+		cleaned = append(cleaned, item.name)
+	}
+	return cleaned, nil
+}
+
+func parseRuntimeContainerState(body []byte, expectedName string) (dockerCoreState, error) {
+	var records []struct {
+		Name  string          `json:"Name"`
+		State dockerCoreState `json:"State"`
+	}
+	if err := json.Unmarshal(body, &records); err != nil || len(records) != 1 || strings.TrimPrefix(records[0].Name, "/") != expectedName {
+		return dockerCoreState{}, errors.New("Docker runtime returned an invalid container state")
+	}
+	state := records[0].State
+	if strings.TrimSpace(state.Status) == "" || state.Running && state.Status != "running" {
+		return dockerCoreState{}, errors.New("Docker runtime returned an invalid container state")
+	}
+	return state, nil
+}
+
+func runtimeStartConflict() error {
+	return errors.New("runtime_exists: a target service container is still active or cannot be safely reconciled; inspect with runtime status and stop this target before starting a fresh stack")
+}
+
+func (r Runner) runtimeServiceOperation(ctx context.Context, action, serviceID, label string, options commandOptions, stdout, stderr io.Writer) int {
+	if !validRuntimeServiceID(serviceID) {
+		return fail(stderr, application.ExitArguments, "--service must be a valid service id")
+	}
+	names, err := r.Docker.ListContainers(ctx, label)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	container := "liapoldus-" + serviceID
+	if !containsRuntimeContainer(names, container) {
+		return fail(stderr, application.ExitTarget, "runtime service container is not present for this target")
+	}
+	if action == "start" {
+		return r.startRuntimeService(ctx, serviceID, container, label, options, stdout, stderr)
+	}
+	switch action {
+	case "stop":
+		err = r.Docker.StopContainer(ctx, container)
+	case "restart":
+		err = r.Docker.RestartContainer(ctx, container)
+	default:
+		return fail(stderr, application.ExitArguments, "unsupported service runtime action")
+	}
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	containerState := "stopped"
+	if action != "stop" {
+		inspect, inspectErr := r.Docker.Inspect(ctx, container)
+		if inspectErr != nil {
+			emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s state could not be verified after %s; inspect the runtime output", serviceID, action))
+		}
+		summary, summaryErr := safeDockerInspectSummary(inspect, container)
+		if summaryErr != nil || summary.State != "running" {
+			emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s did not remain running after %s; inspect the runtime output", serviceID, action))
+		}
+		containerState = summary.State
+		if err := r.waitForCoreServiceReady(ctx, options, serviceID); err != nil {
+			emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core did not confirm service %s readiness after %s: %v", serviceID, action, err))
+		}
+		inspect, inspectErr = r.Docker.Inspect(ctx, container)
+		if inspectErr != nil {
+			emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s state could not be verified after Core readiness", serviceID))
+		}
+		summary, summaryErr = safeDockerInspectSummary(inspect, container)
+		if summaryErr != nil || summary.State != "running" {
+			emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s exited before Core readiness was confirmed", serviceID))
+		}
+	}
+	readiness := "ready"
+	if action == "stop" {
+		readiness = "stopped"
+	}
+	return encode(stdout, map[string]any{"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.completed", "operationId": label, "serviceId": serviceID, "action": action, "container": container, "containerState": containerState, "readiness": readiness})
+}
+
+// startRuntimeService reconciles a stopped target-owned service container to
+// the exact artifact pin in the current Project. A running container is never
+// replaced implicitly; Studio must stop that one service first. The previous
+// trusted artifact is staged before removal so a failed replacement can
+// recreate the old service without touching Core or sibling services.
+func (r Runner) startRuntimeService(ctx context.Context, serviceID, container, label string, options commandOptions, stdout, stderr io.Writer) int {
+	inspect, err := r.Docker.Inspect(ctx, container)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, "service container state could not be verified")
+	}
+	state, err := parseRuntimeContainerState(inspect, container)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if state.Running || state.Status == "running" {
+		return r.startExistingRuntimeService(ctx, serviceID, container, label, options, stdout, stderr)
+	}
+	if state.Status == "paused" || state.Status == "restarting" {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("runtime_exists: service container has state %q and cannot be safely updated", state.Status))
+	}
+	if state.Status != "created" && state.Status != "exited" && state.Status != "dead" {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("runtime_exists: service container has state %q and cannot be safely updated", state.Status))
+	}
+
+	plan, err := r.planRuntime(ctx, options)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	var desired *domain.RuntimeServiceArtifact
+	for index := range plan.Services {
+		if plan.Services[index].Artifact.ID == serviceID {
+			desired = &plan.Services[index]
+			break
+		}
+	}
+	if desired == nil {
+		return fail(stderr, application.ExitTarget, "service is not included in the current runtime plan")
+	}
+	if err := validateRuntimePlanTrusted(domain.RuntimePlan{Services: []domain.RuntimeServiceArtifact{*desired}}); err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	target, err := r.registry(options.targets).Find(options.target)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if target.RuntimePlatform != "" && desired.Artifact.Platform != target.RuntimePlatform {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("%s: %v", desired.Artifact.Key(), domain.ErrArtifactPlatformMismatch))
+	}
+	client, err := r.runtimeCoreClient(ctx, options)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	status, err := client.ServiceMetadata(ctx, serviceID, "status")
+	var currentVersion, currentDigest string
+	if err == nil {
+		currentVersion, currentDigest, err = serviceArtifactFromStatus(status, serviceID)
+		if err != nil {
+			return fail(stderr, application.ExitTarget, err.Error())
+		}
+	} else {
+		var responseError domain.CoreHTTPError
+		if !errors.As(err, &responseError) || responseError.Status != 503 || responseError.Code != "service_unavailable" {
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("read Core service artifact status: %v", err))
+		}
+		// Core has no live replica metadata while this target-owned container is
+		// stopped. Recover the previous pin from the exact read-only binary mount
+		// in Docker inspect, then require that digest to exist as a trusted CLI
+		// registry artifact before allowing replacement/rollback.
+		artifacts, listErr := r.Artifacts.List()
+		if listErr != nil {
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("read previous service artifact registry: %v", listErr))
+		}
+		previous, inspectErr := previousServiceArtifactFromStoppedContainer(inspect, container, label, target, serviceID, desired.Artifact.Platform, artifacts)
+		if inspectErr != nil {
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core has no live status for stopped service and its previous trusted artifact could not be proven: %v", inspectErr))
+		}
+		currentVersion, currentDigest = previous.Version, previous.Digest
+	}
+	if currentVersion == desired.Artifact.Version && currentDigest == desired.Artifact.Digest {
+		return r.startExistingRuntimeService(ctx, serviceID, container, label, options, stdout, stderr)
+	}
+	if state.Running || state.Status == "running" {
+		return fail(stderr, application.ExitTarget, "service_artifact_update_requires_stop: stop this target service before applying its changed artifact pin")
+	}
+	return r.replaceStoppedRuntimeService(ctx, serviceID, container, label, options, target, *desired, currentVersion, currentDigest, client, stdout, stderr)
+}
+
+func previousServiceArtifactFromStoppedContainer(inspect []byte, container, targetLabel string, target domain.Target, serviceID, platform string, artifacts []domain.Artifact) (domain.Artifact, error) {
+	var records []struct {
+		Name   string `json:"Name"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+		Mounts []struct {
+			Source      string `json:"Source"`
+			Destination string `json:"Destination"`
+			RW          bool   `json:"RW"`
+		} `json:"Mounts"`
+		State struct {
+			Status  string `json:"Status"`
+			Running bool   `json:"Running"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal(inspect, &records); err != nil || len(records) != 1 {
+		return domain.Artifact{}, errors.New("Docker inspect response is invalid")
+	}
+	record := records[0]
+	if strings.TrimPrefix(record.Name, "/") != container || record.Config.Labels["com.liapoldus.runtime"] != targetLabel || record.State.Running || (record.State.Status != "exited" && record.State.Status != "created" && record.State.Status != "dead") {
+		return domain.Artifact{}, errors.New("container identity or stopped state does not match the selected target service")
+	}
+	staging, err := runtimeStagingDirectory(target)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	wantedDestination := "/liapoldus/" + serviceID
+	var source string
+	for _, mount := range record.Mounts {
+		if mount.Destination != wantedDestination {
+			continue
+		}
+		if source != "" || mount.RW || !filepath.IsAbs(mount.Source) {
+			return domain.Artifact{}, errors.New("binary mount is ambiguous or writable")
+		}
+		source = filepath.Clean(mount.Source)
+	}
+	if source == "" {
+		return domain.Artifact{}, errors.New("staged service binary mount is missing")
+	}
+	relative, err := filepath.Rel(staging, source)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || strings.Contains(relative, string(filepath.Separator)) {
+		return domain.Artifact{}, errors.New("staged service binary is outside target-owned runtime storage")
+	}
+	digest, err := digestFile(source)
+	if err != nil || filepath.Base(source) != serviceID+"-"+strings.TrimPrefix(digest, "sha256:") {
+		return domain.Artifact{}, errors.New("staged service binary digest cannot be proven")
+	}
+	for _, artifact := range artifacts {
+		if artifact.ID != serviceID || artifact.Platform != platform || artifact.Digest != digest || !artifact.Trusted || artifact.Version == "" {
+			continue
+		}
+		return artifact, nil
+	}
+	return domain.Artifact{}, errors.New("staged service binary does not match a trusted artifact in the CLI registry")
+}
+
+func (r Runner) runtimeCoreClient(ctx context.Context, options commandOptions) (domain.CoreClient, error) {
+	if r.CoreFactory == nil {
+		return nil, errors.New("Core client is not configured")
+	}
+	connection, err := r.credentials(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	client, err := r.CoreFactory(connection)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+func serviceArtifactFromStatus(body json.RawMessage, expectedServiceID string) (string, string, error) {
+	var status struct {
+		InstanceID      string `json:"instanceId"`
+		ArtifactID      string `json:"artifactId"`
+		ArtifactVersion string `json:"artifactVersion"`
+		ArtifactDigest  string `json:"artifactDigest"`
+	}
+	if !json.Valid(body) || json.Unmarshal(body, &status) != nil || status.InstanceID != expectedServiceID || status.ArtifactID != expectedServiceID || strings.TrimSpace(status.ArtifactVersion) == "" {
+		return "", "", errors.New("Core returned an invalid service artifact status contract")
+	}
+	if !validArtifactDigest(status.ArtifactDigest) {
+		return "", "", errors.New("Core returned an invalid service artifact digest")
+	}
+	return status.ArtifactVersion, status.ArtifactDigest, nil
+}
+
+func validArtifactDigest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	digest := strings.TrimPrefix(value, "sha256:")
+	return len(digest) == 64 && strings.Trim(digest, "0123456789abcdef") == ""
+}
+
+func (r Runner) startExistingRuntimeService(ctx context.Context, serviceID, container, label string, options commandOptions, stdout, stderr io.Writer) int {
+	if err := r.Docker.StartContainer(ctx, container); err != nil {
+		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	inspect, err := r.Docker.Inspect(ctx, container)
+	if err != nil {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s state could not be verified after start", serviceID))
+	}
+	summary, err := safeDockerInspectSummary(inspect, container)
+	if err != nil || summary.State != "running" {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s did not remain running after start", serviceID))
+	}
+	if err := r.waitForCoreServiceReady(ctx, options, serviceID); err != nil {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("Core did not confirm service %s readiness after start: %v", serviceID, err))
+	}
+	inspect, err = r.Docker.Inspect(ctx, container)
+	if err != nil {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s state could not be verified after Core readiness", serviceID))
+	}
+	summary, err = safeDockerInspectSummary(inspect, container)
+	if err != nil || summary.State != "running" {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service %s exited before Core readiness was confirmed", serviceID))
+	}
+	return encode(stdout, map[string]any{"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.completed", "operationId": label, "serviceId": serviceID, "action": "start", "container": container, "containerState": "running", "readiness": "ready", "artifactReplaced": false})
+}
+
+func (r Runner) replaceStoppedRuntimeService(ctx context.Context, serviceID, container, label string, options commandOptions, target domain.Target, desired domain.RuntimeServiceArtifact, previousVersion, previousDigest string, client domain.CoreClient, stdout, stderr io.Writer) int {
+	var previous domain.Artifact
+	artifacts, err := r.Artifacts.List()
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("read previous service artifact registry: %v", err))
+	}
+	for _, artifact := range artifacts {
+		if artifact.ID == serviceID && artifact.Version == previousVersion && artifact.Digest == previousDigest && artifact.Platform == desired.Artifact.Platform && artifact.Trusted {
+			previous = artifact
+			break
+		}
+	}
+	if previous.Path == "" {
+		return fail(stderr, application.ExitTarget, "artifact_rollback_unavailable: previous trusted service binary is not available in the CLI registry")
+	}
+	oldStaged, err := stageRuntimeArtifact(target, previous.Path, serviceID+"-rollback")
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("stage previous service artifact for rollback: %v", err))
+	}
+	oldStagedDigest, err := digestFile(oldStaged)
+	if err != nil || oldStagedDigest != previous.Digest {
+		return fail(stderr, application.ExitTarget, "artifact_rollback_unavailable: previous binary no longer matches its registered digest")
+	}
+	newStaged, err := stageRuntimeArtifact(target, desired.Artifact.Path, serviceID)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("stage desired service artifact: %v", err))
+	}
+	newStagedDigest, err := digestFile(newStaged)
+	if err != nil || newStagedDigest != desired.Artifact.Digest {
+		return fail(stderr, application.ExitTarget, "artifact_digest_mismatch: desired staged binary changed after Runtime Plan")
+	}
+	network := runtimeNetwork(label)
+	previousService := desired
+	previousService.Artifact = previous
+	oldRequest, err := runtimeContainerRequest(target, previousService, oldStaged, network, label)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("prepare rollback runtime: %v", err))
+	}
+	newRequest, err := runtimeContainerRequest(target, desired, newStaged, network, label)
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("prepare desired runtime: %v", err))
+	}
+	if err := r.Docker.RemoveContainer(ctx, container); err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("remove stopped service container for artifact update: %v", err))
+	}
+	if err := r.Docker.RunContainer(ctx, newRequest); err != nil {
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("start desired service artifact: %w", err), stderr)
+	}
+	metadata := domain.ServiceRegistrationMetadata{
+		ArtifactID: desired.Artifact.ID, ArtifactVersion: desired.Artifact.Version, Digest: desired.Artifact.Digest,
+		InstanceID: desired.Artifact.ID, ReplicaID: desired.Artifact.ID,
+		ControlEndpoint: desired.ControlEndpoint, PeerEndpoint: desired.PeerEndpoint, RuntimeStatus: "started",
+	}
+	if _, err := registerRuntimeService(ctx, client, metadata, 60*time.Second); err != nil {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("Core registration for desired artifact: %w", err), stderr)
+	}
+	if err := r.waitForCoreServiceReady(ctx, options, serviceID); err != nil {
+		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("Core readiness for desired artifact: %w", err), stderr)
+	}
+	confirmed, err := client.ServiceMetadata(ctx, serviceID, "status")
+	if err != nil {
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("verify Core artifact status: %w", err), stderr)
+	}
+	version, digest, err := serviceArtifactFromStatus(confirmed, serviceID)
+	if err != nil || version != desired.Artifact.Version || digest != desired.Artifact.Digest {
+		if err == nil {
+			err = errors.New("Core still reports a different live artifact")
+		}
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("verify desired Core artifact provenance: %w", err), stderr)
+	}
+	return encode(stdout, map[string]any{"schemaVersion": domain.RuntimeEventsSchema, "type": "runtime.completed", "operationId": label, "serviceId": serviceID, "action": "start", "container": container, "containerState": "running", "readiness": "ready", "artifactReplaced": true, "previousArtifactVersion": previousVersion, "previousArtifactDigest": previousDigest, "artifactVersion": desired.Artifact.Version, "artifactDigest": desired.Artifact.Digest})
+}
+
+func serviceRegistrationMetadata(service domain.RuntimeServiceArtifact) domain.ServiceRegistrationMetadata {
+	return domain.ServiceRegistrationMetadata{
+		ArtifactID: service.Artifact.ID, ArtifactVersion: service.Artifact.Version, Digest: service.Artifact.Digest,
+		InstanceID: service.Artifact.ID, ReplicaID: service.Artifact.ID,
+		ControlEndpoint: service.ControlEndpoint, PeerEndpoint: service.PeerEndpoint, RuntimeStatus: "started",
+	}
+}
+
+func (r Runner) rollbackRuntimeService(ctx context.Context, serviceID, container, label string, options commandOptions, previousRequest domain.DockerContainerRequest, client domain.CoreClient, previousMetadata domain.ServiceRegistrationMetadata, cause error, stderr io.Writer) int {
+	rollbackContext, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_ = r.Docker.StopContainer(rollbackContext, container)
+	_ = r.Docker.RemoveContainer(rollbackContext, container)
+	if err := r.Docker.RunContainer(rollbackContext, previousRequest); err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed (%v); rollback failed: %v", cause, err))
+	}
+	if _, err := registerRuntimeService(rollbackContext, client, previousMetadata, 60*time.Second); err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed (%v); rollback container started but Core registration failed: %v", cause, err))
+	}
+	if err := r.waitForCoreServiceReady(rollbackContext, options, serviceID); err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed (%v); previous container restarted but Core readiness failed: %v", cause, err))
+	}
+	status, err := client.ServiceMetadata(rollbackContext, serviceID, "status")
+	if err != nil {
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed (%v); previous container is ready but Core provenance could not be verified: %v", cause, err))
+	}
+	version, digest, err := serviceArtifactFromStatus(status, serviceID)
+	if err != nil || version != previousMetadata.ArtifactVersion || digest != previousMetadata.Digest {
+		if err == nil {
+			err = errors.New("Core reports a different artifact after rollback")
+		}
+		return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed (%v); previous container is ready but Core provenance does not match rollback: %v", cause, err))
+	}
+	return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed and previous container was restored: %v", cause))
+}
+
+func (r Runner) waitForCoreServiceReady(ctx context.Context, options commandOptions, serviceID string) error {
+	if r.CoreFactory == nil {
+		return errors.New("Core client is not configured")
+	}
+	connection, err := r.credentials(ctx, options)
+	if err != nil {
+		return err
+	}
+	client, err := r.CoreFactory(connection)
+	if err != nil {
+		return err
+	}
+
+	const timeout = 30 * time.Second
+	const interval = 250 * time.Millisecond
+	waitContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		body, statusErr := client.ServiceMetadata(waitContext, serviceID, "status")
+		if statusErr == nil {
+			ready, parseErr := serviceStatusReady(body, serviceID, serviceID)
+			if parseErr != nil {
+				return parseErr
+			}
+			if ready {
+				return nil
+			}
+			lastErr = errors.New("Core reports that one or more replicas are not ready")
+		} else {
+			var responseError domain.CoreHTTPError
+			if errors.As(statusErr, &responseError) && responseError.Status < 500 {
+				return statusErr
+			}
+			lastErr = statusErr
+		}
+		select {
+		case <-waitContext.Done():
+			if lastErr != nil {
+				return fmt.Errorf("readiness confirmation timed out: %w", lastErr)
+			}
+			return fmt.Errorf("readiness confirmation timed out: %w", waitContext.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func serviceStatusReady(body json.RawMessage, expectedServiceID, expectedReplicaID string) (bool, error) {
+	var status struct {
+		InstanceID string `json:"instanceId"`
+		Replicas   []struct {
+			ReplicaID string `json:"replicaId"`
+			Ready     *bool  `json:"ready"`
+		} `json:"replicas"`
+	}
+	if !json.Valid(body) || json.Unmarshal(body, &status) != nil || status.InstanceID != expectedServiceID || len(status.Replicas) == 0 {
+		return false, errors.New("Core returned an invalid service status contract")
+	}
+	foundExpectedReplica := false
+	for _, replica := range status.Replicas {
+		if replica.ReplicaID == "" || replica.Ready == nil {
+			return false, errors.New("Core returned an incomplete replica readiness contract")
+		}
+		if replica.ReplicaID == expectedReplicaID {
+			foundExpectedReplica = true
+		}
+		if !*replica.Ready {
+			return false, nil
+		}
+	}
+	return foundExpectedReplica, nil
+}
+
+func validRuntimeServiceID(value string) bool {
+	if strings.TrimSpace(value) != value || value == "" || value == "core" || strings.HasPrefix(value, "-") || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '.' || char == '_' || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func containsRuntimeContainer(names []string, expected string) bool {
+	for _, name := range names {
+		if name == expected {
+			return true
+		}
+	}
+	return false
+}
+
+// emitRuntimeStartupLogs preserves bounded, redacted Core and service output
+// before the failed-start rollback removes its temporary containers. This keeps
+// the normal rollback policy while making SDK registration/startup failures
+// diagnosable in Studio, whose typed Runtime Logs action can no longer address
+// removed ones.
+func emitRuntimeStartupLogs(ctx context.Context, output io.Writer, docker domain.DockerProvider, names []string) {
+	if docker == nil || output == nil {
+		return
+	}
+	const maximumStartupLogServices = 8
+	count := 0
+	for _, name := range names {
+		if count >= maximumStartupLogServices {
+			continue
+		}
+		label := "service " + strings.TrimPrefix(name, "liapoldus-")
+		if name == coreContainer {
+			label = "Core"
+		}
+		inspect, inspectErr := docker.Inspect(ctx, name)
+		if inspectErr == nil {
+			if summary, summaryErr := safeDockerInspectSummary(inspect, name); summaryErr == nil {
+				if encoded, marshalErr := json.Marshal(summary); marshalErr == nil {
+					_, _ = fmt.Fprintf(output, "%s container state: %s\n", label, safeStudioDiagnostic(string(encoded)))
+				}
+			}
+		}
+		body, err := docker.Logs(ctx, name)
+		if err != nil || len(body) == 0 {
+			count++
+			continue
+		}
+		_, _ = fmt.Fprintf(output, "%s startup output: %s\n", label, safeRuntimeLogSummary(body))
+		count++
+	}
+}
+
+func safeRuntimeLogSummary(body []byte) string {
+	const maximumRuntimeLogBytes = 2048
+	if len(body) > maximumRuntimeLogBytes {
+		body = body[len(body)-maximumRuntimeLogBytes:]
+	}
+	value := strings.ReplaceAll(string(body), "\r\n", " | ")
+	value = strings.ReplaceAll(value, "\n", " | ")
+	value = strings.ReplaceAll(value, "\r", " | ")
+	value = strings.TrimSpace(value)
+	return safeStudioDiagnostic(value)
+}
+
 func runtimeIdempotencyKey(label, digest string) (string, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -396,9 +1206,9 @@ func runtimeIdempotencyKey(label, digest string) (string, error) {
 	return "runtime-" + label + "-" + strings.TrimPrefix(digest, "sha256:") + "-" + hex.EncodeToString(nonce[:]), nil
 }
 
-func waitForCorePlugin(ctx context.Context, client domain.CoreClient, pluginID string, timeout time.Duration) error {
-	if client == nil || strings.TrimSpace(pluginID) == "" {
-		return errors.New("Core client and plugin id are required")
+func registerRuntimeService(ctx context.Context, client domain.CoreClient, metadata domain.ServiceRegistrationMetadata, timeout time.Duration) (json.RawMessage, error) {
+	if ctx == nil || client == nil || strings.TrimSpace(metadata.InstanceID) == "" || timeout <= 0 {
+		return nil, errors.New("Core client, service identity and timeout are required")
 	}
 	waitContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -406,20 +1216,47 @@ func waitForCorePlugin(ctx context.Context, client domain.CoreClient, pluginID s
 	defer ticker.Stop()
 	var lastErr error
 	for {
-		body, err := client.PluginMetadata(waitContext, pluginID, "status")
+		// Core may need to fetch manifest, schema, identity, and readiness from
+		// the Service SDK before it can accept this claim. The SDK read deadline
+		// is 15 seconds, so a 5-second CLI attempt cancelled that Core→SDK
+		// control-plane work prematurely. Leave headroom below Core client's
+		// 30-second HTTP timeout while still bounding one registration attempt.
+		attemptTimeout := 25 * time.Second
+		if deadline, ok := waitContext.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < attemptTimeout {
+				attemptTimeout = remaining
+			}
+		}
+		attemptContext, attemptCancel := context.WithTimeout(waitContext, attemptTimeout)
+		body, err := client.RegisterService(attemptContext, metadata)
+		attemptCancel()
 		if err == nil && json.Valid(body) {
-			return nil
+			return body, nil
+		}
+		if err == nil {
+			err = domain.CoreContractError{Operation: "service register", Message: "invalid JSON"}
 		}
 		lastErr = err
+		if !retryableServiceRegistrationError(err) {
+			return nil, err
+		}
 		select {
 		case <-waitContext.Done():
 			if lastErr != nil {
-				return lastErr
+				return nil, lastErr
 			}
-			return waitContext.Err()
+			return nil, waitContext.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+func retryableServiceRegistrationError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var responseError domain.CoreHTTPError
+	return errors.As(err, &responseError) && responseError.Status >= 500
 }
 
 func runtimeContainerRequest(target domain.Target, service domain.RuntimeServiceArtifact, staged, network, label string) (domain.DockerContainerRequest, error) {
@@ -431,12 +1268,12 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 	if _, err := os.Stat(target.CAFile); err != nil {
 		return domain.DockerContainerRequest{}, fmt.Errorf("runtime CA: %w", err)
 	}
-	pluginCertificate := filepath.Join(config.TLSDirectory, artifact.ID+".crt")
-	pluginKey := filepath.Join(config.TLSDirectory, artifact.ID+".key")
+	serviceCertificate := filepath.Join(config.TLSDirectory, artifact.ID+".crt")
+	serviceKey := filepath.Join(config.TLSDirectory, artifact.ID+".key")
 	peerCertificate := filepath.Join(config.TLSDirectory, artifact.ID+"-peer.crt")
 	peerKey := filepath.Join(config.TLSDirectory, artifact.ID+"-peer.key")
 	crlFile := filepath.Join(config.TLSDirectory, "revoked.pem")
-	for _, path := range []string{pluginCertificate, pluginKey, peerCertificate, peerKey, crlFile} {
+	for _, path := range []string{serviceCertificate, serviceKey, peerCertificate, peerKey, crlFile} {
 		if _, err := os.Stat(path); err != nil {
 			return domain.DockerContainerRequest{}, fmt.Errorf("runtime TLS asset %s: %w", filepath.Base(path), err)
 		}
@@ -451,7 +1288,7 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 	if err != nil {
 		return domain.DockerContainerRequest{}, errors.New("project peer endpoint is invalid")
 	}
-	peerIdentity, err := runtimePeerIdentity(pluginCertificate, pluginKey, peerCertificate, peerKey, artifact.ID)
+	peerIdentity, err := runtimePeerIdentity(serviceCertificate, serviceKey, peerCertificate, peerKey, artifact.ID)
 	if err != nil {
 		return domain.DockerContainerRequest{}, err
 	}
@@ -468,8 +1305,8 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 		coreClientName = coreName
 	}
 	containerCA := "/liapoldus/tls/ca.pem"
-	containerCert := "/liapoldus/tls/plugin.crt"
-	containerKey := "/liapoldus/tls/plugin.key"
+	containerCert := "/liapoldus/tls/service.crt"
+	containerKey := "/liapoldus/tls/service.key"
 	containerPeerCert := "/liapoldus/tls/peer.crt"
 	containerPeerKey := "/liapoldus/tls/peer.key"
 	containerCRL := "/liapoldus/tls/revoked.pem"
@@ -483,7 +1320,7 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 	containerRest := "0.0.0.0:9443"
 	containerPeer := "0.0.0.0:" + strconv.Itoa(peerPort)
 	environment := map[string]string{
-		"LIAPOLDUS_PLUGIN_ID":               artifact.ID,
+		"LIAPOLDUS_SERVICE_ID":              artifact.ID,
 		"LIAPOLDUS_RUNTIME_EVENTS":          domain.RuntimeEventsSchema,
 		"LIAPOLDUS_INSTANCE_ID":             artifact.ID,
 		"LIAPOLDUS_REPLICA_ID":              artifact.ID,
@@ -518,7 +1355,7 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 		// The SDK-backed operator surface and the product's public listener are
 		// separate HTTP servers. Keep their container ports distinct so a
 		// configured Caddy listener cannot fail activation by colliding with the
-		// plugin's health/metrics/peer diagnostic listener.
+		// service's health/metrics/peer diagnostic listener.
 		environment["LIAPOLDUS_PUBLIC_LISTEN"] = "0.0.0.0:" + strconv.Itoa(publicPorts.apiContainer)
 	}
 	request := domain.DockerContainerRequest{
@@ -535,14 +1372,14 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 		Environment:        environment,
 		Mounts: []domain.DockerMount{
 			{Source: target.CAFile, Target: containerCA, ReadOnly: true},
-			{Source: pluginCertificate, Target: containerCert, ReadOnly: true},
-			{Source: pluginKey, Target: containerKey, ReadOnly: true},
+			{Source: serviceCertificate, Target: containerCert, ReadOnly: true},
+			{Source: serviceKey, Target: containerKey, ReadOnly: true},
 			{Source: peerCertificate, Target: containerPeerCert, ReadOnly: true},
 			{Source: peerKey, Target: containerPeerKey, ReadOnly: true},
 			{Source: crlFile, Target: containerCRL, ReadOnly: true},
 		},
 	}
-	// Plugin SDK REST and peer transports stay private to the Docker network.
+	// Service SDK REST and peer transports stay private to the Docker network.
 	// The product listener and the SDK-backed public diagnostic surface are
 	// independently published only on host loopback.
 	if artifact.ID == config.PublicServiceID {
@@ -559,32 +1396,32 @@ func runtimeContainerRequest(target domain.Target, service domain.RuntimeService
 // runtimePeerIdentity requires the protocol certificate to authenticate the
 // same replica identity that Core registered from the SDK lifecycle
 // certificate. Core's peer directory pins callers to that full identity, so a
-// plugin-wide URI such as spiffe://liapoldus/plugin/echo is not sufficient.
-func runtimePeerIdentity(pluginCertificate, pluginKey, peerCertificate, peerKey, pluginID string) (string, error) {
-	coreIdentity, err := runtimeCertificateIdentity(pluginCertificate, pluginKey)
+// service-wide URI such as spiffe://liapoldus/service/echo is not sufficient.
+func runtimePeerIdentity(serviceCertificate, serviceKey, peerCertificate, peerKey, serviceID string) (string, error) {
+	coreIdentity, err := runtimeCertificateIdentity(serviceCertificate, serviceKey)
 	if err != nil {
-		return "", fmt.Errorf("plugin Core certificate identity is invalid: %w", err)
+		return "", fmt.Errorf("service Core certificate identity is invalid: %w", err)
 	}
 	peerIdentity, err := runtimeCertificateIdentity(peerCertificate, peerKey)
 	if err != nil {
-		return "", fmt.Errorf("plugin peer certificate identity is invalid: %w", err)
+		return "", fmt.Errorf("service peer certificate identity is invalid: %w", err)
 	}
 	if coreIdentity != peerIdentity {
-		return "", errors.New("plugin peer certificate identity must match the Core replica certificate identity")
+		return "", errors.New("service peer certificate identity must match the Core replica certificate identity")
 	}
 	parsed, err := url.Parse(coreIdentity)
 	if err != nil || parsed.Scheme != "spiffe" || parsed.Host != "liapoldus" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("plugin certificate must contain one Liapoldus SPIFFE replica identity")
+		return "", errors.New("service certificate must contain one Liapoldus SPIFFE replica identity")
 	}
 	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
-	if len(segments) != 4 || segments[0] != "plugin" {
-		return "", errors.New("plugin certificate must contain one Liapoldus SPIFFE replica identity")
+	if len(segments) != 4 || segments[0] != "service" {
+		return "", errors.New("service certificate must contain one Liapoldus SPIFFE replica identity")
 	}
 	instanceID, instanceErr := url.PathUnescape(segments[1])
 	replicaID, replicaErr := url.PathUnescape(segments[2])
 	incarnationID, incarnationErr := url.PathUnescape(segments[3])
-	if instanceErr != nil || replicaErr != nil || incarnationErr != nil || instanceID != pluginID || replicaID != pluginID || incarnationID == "" {
-		return "", errors.New("plugin certificate SPIFFE identity does not match its runtime replica")
+	if instanceErr != nil || replicaErr != nil || incarnationErr != nil || instanceID != serviceID || replicaID != serviceID || incarnationID == "" {
+		return "", errors.New("service certificate SPIFFE identity does not match its runtime replica")
 	}
 	return coreIdentity, nil
 }

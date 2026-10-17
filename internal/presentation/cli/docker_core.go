@@ -27,57 +27,119 @@ type dockerCoreState struct {
 	Running bool   `json:"Running"`
 }
 
-func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label string) (bool, error) {
+type dockerCoreConfig struct {
+	Image  string            `json:"Image"`
+	Labels map[string]string `json:"Labels"`
+}
+
+type dockerInspectContainer struct {
+	State  dockerCoreState  `json:"State"`
+	Config dockerCoreConfig `json:"Config"`
+}
+
+type dockerCoreStartResult struct {
+	Created bool
+	Updated bool
+}
+
+func parseDockerCoreState(body []byte) (dockerCoreState, error) {
+	var containers []dockerInspectContainer
+	if err := json.Unmarshal(body, &containers); err != nil {
+		return dockerCoreState{}, errors.New("Core container returned invalid status")
+	}
+	if len(containers) != 1 {
+		return dockerCoreState{}, errors.New("Core container returned invalid status")
+	}
+	state := containers[0].State
+	if strings.TrimSpace(state.Status) == "" || (state.Running && state.Status != "running") {
+		return dockerCoreState{}, errors.New("Core container returned invalid status")
+	}
+	return state, nil
+}
+
+func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label string) (dockerCoreStartResult, error) {
+	result := dockerCoreStartResult{}
 	if target.Transport != domain.TransportLocalProcess {
-		return false, errors.New("Docker Core lifecycle requires a local-process target")
+		return result, errors.New("Docker Core lifecycle requires a local-process target")
 	}
 	if r.Docker == nil || r.CoreFactory == nil {
-		return false, errors.New("Docker Core runtime is not configured")
+		return result, errors.New("Docker Core runtime is not configured")
 	}
-	provider := r.Docker.Probe(ctx)
+	provider, engineErr := ensureDockerProvider(ctx, r.Docker)
+	if engineErr != nil {
+		return result, engineErr
+	}
 	if !provider.Available {
 		if provider.ErrorCode != "" {
-			return false, errors.New(provider.ErrorCode)
+			return result, errors.New(provider.ErrorCode)
 		}
-		return false, errors.New("provider_missing")
+		return result, errors.New("provider_missing")
 	}
 	if strings.TrimSpace(target.RuntimeImage) == "" {
-		return false, errors.New("runtime_image_missing")
+		return result, errors.New("runtime_image_missing")
 	}
 	if strings.TrimSpace(target.CoreBinary) == "" {
-		return false, errors.New("Core binary is not configured")
+		return result, errors.New("Core binary is not configured")
 	}
 	if !filepath.IsAbs(target.StatePath) {
-		return false, errors.New("Core state path must be absolute")
+		return result, errors.New("Core state path must be absolute")
 	}
 	if target.RuntimePlatform != "linux/amd64" && target.RuntimePlatform != "linux/arm64" {
-		return false, domain.ErrArtifactPlatformMismatch
+		return result, domain.ErrArtifactPlatformMismatch
 	}
 	if target.Endpoint == "" {
-		return false, errors.New("Core Management endpoint is not configured")
+		return result, errors.New("Core Management endpoint is not configured")
 	}
 	if err := os.MkdirAll(filepath.Dir(target.StatePath), 0o700); err != nil {
-		return false, errors.New("Core state directory is unavailable")
+		return result, errors.New("Core state directory is unavailable")
 	}
 	stateInfo, stateErr := os.Lstat(target.StatePath)
 	newState := errors.Is(stateErr, os.ErrNotExist)
 	if stateErr != nil && !newState {
-		return false, errors.New("Core state path cannot be inspected")
+		return result, errors.New("Core state path cannot be inspected")
 	}
 	if !newState && !stateInfo.Mode().IsRegular() {
-		return false, errors.New("Core state path must be a regular file")
+		return result, errors.New("Core state path must be a regular file")
 	}
-	if _, err := os.Stat(target.CoreBinary); err != nil {
-		return false, errors.New("configured Linux Core binary is unavailable")
+	info, err := os.Stat(target.CoreBinary)
+	if err != nil || !info.Mode().IsRegular() {
+		return result, errors.New("configured Linux Core binary is unavailable")
+	}
+	binaryDigest, err := digestFile(target.CoreBinary)
+	if err != nil || !strings.HasPrefix(binaryDigest, "sha256:") {
+		return result, errors.New("configured Core binary digest is unavailable")
+	}
+	if target.CoreBinaryDigest != "" && target.CoreBinaryDigest != binaryDigest {
+		return result, errors.New("configured Core binary digest changed; review and trust the replacement before starting Core")
+	}
+	binaryDigest = strings.TrimPrefix(binaryDigest, "sha256:")
+	credential, err := r.bootstrapManagementCredential(ctx, target, newState)
+	if err != nil {
+		return result, err
+	}
+	stateDirectory := filepath.Dir(target.StatePath)
+	tokenDirectory, err := writeBootstrapToken(credential, stateDirectory)
+	if err != nil {
+		return result, errors.New("could not prepare one-time Core bootstrap credential")
+	}
+	defer os.RemoveAll(tokenDirectory)
+	stagedCore, err := stageRuntimeArtifact(target, target.CoreBinary, "core")
+	if err != nil {
+		return result, errors.New("could not stage the configured Core binary")
 	}
 
 	network := runtimeNetwork(label)
+	request, err := coreContainerRequest(target, label, network, stagedCore, tokenDirectory)
+	if err != nil {
+		return result, err
+	}
+	request.CoreBinaryDigest = binaryDigest
 	if err := r.Docker.NetworkCreate(ctx, network, label); err != nil {
-		return false, fmt.Errorf("create Docker runtime network: %w", err)
+		return result, fmt.Errorf("create Docker runtime network: %w", err)
 	}
 	containers, err := r.Docker.ListContainers(ctx, label)
 	if err != nil {
-		return false, fmt.Errorf("inspect Docker runtime containers: %w", err)
+		return result, fmt.Errorf("inspect Docker runtime containers: %w", err)
 	}
 	for _, name := range containers {
 		if name != coreContainer {
@@ -85,42 +147,41 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 		}
 		body, inspectErr := r.Docker.Inspect(ctx, coreContainer)
 		if inspectErr != nil {
-			return false, fmt.Errorf("inspect Core container: %w", inspectErr)
+			return result, fmt.Errorf("inspect Core container: %w", inspectErr)
 		}
-		var state dockerCoreState
-		if json.Unmarshal(body, &state) != nil {
-			return false, errors.New("Core container returned invalid status")
+		state, statusErr := parseDockerCoreState(body)
+		if statusErr != nil {
+			return result, statusErr
+		}
+		inspected, inspectErr := parseDockerCoreInspect(body)
+		if inspectErr != nil {
+			return result, inspectErr
+		}
+		if inspected.Config.Labels["com.liapoldus.runtime"] != label {
+			return result, errors.New("Core container is not owned by the selected target")
 		}
 		if state.Running || state.Status == "running" {
-			if err := r.waitDockerCore(ctx, target, 3*time.Second); err != nil {
-				return false, fmt.Errorf("Core container is running but Management API is unavailable: %w", err)
+			if inspected.Config.Image == target.RuntimeImage && inspected.Config.Labels["com.liapoldus.core.binary.sha256"] == binaryDigest {
+				if err := r.waitDockerCore(ctx, target, 3*time.Second); err != nil {
+					return result, fmt.Errorf("Core container is running but Management API is unavailable: %w", err)
+				}
+				return result, nil
 			}
-			return false, nil
+			result.Updated = true
+			if err := r.Docker.StopContainer(ctx, coreContainer); err != nil {
+				return dockerCoreStartResult{}, fmt.Errorf("stop outdated Core container: %w", err)
+			}
+			if err := r.Docker.RemoveContainer(ctx, coreContainer); err != nil {
+				return dockerCoreStartResult{}, fmt.Errorf("remove outdated Core container: %w", err)
+			}
+		} else {
+			if err := r.Docker.RemoveContainer(ctx, coreContainer); err != nil {
+				return dockerCoreStartResult{}, fmt.Errorf("remove stopped Core container: %w", err)
+			}
 		}
-		_ = r.Docker.RemoveContainer(ctx, coreContainer)
-		break
-	}
-
-	credential, err := r.bootstrapManagementCredential(ctx, target, newState)
-	if err != nil {
-		return false, err
-	}
-	tokenDirectory, err := writeBootstrapToken(credential)
-	if err != nil {
-		return false, errors.New("could not prepare one-time Core bootstrap credential")
-	}
-	defer os.RemoveAll(tokenDirectory)
-
-	stagedCore, err := stageRuntimeArtifact(target, target.CoreBinary, "core")
-	if err != nil {
-		return false, errors.New("could not stage the configured Core binary")
-	}
-	request, err := coreContainerRequest(target, label, network, stagedCore, tokenDirectory)
-	if err != nil {
-		return false, err
 	}
 	if err := r.Docker.RunContainer(ctx, request); err != nil {
-		return false, fmt.Errorf("start Core Docker container: %w", err)
+		return result, fmt.Errorf("start Core Docker container: %w", describeCoreMountFailure(err, request, target.Name))
 	}
 	if err := r.waitDockerCore(ctx, target, 35*time.Second); err != nil {
 		logs, _ := r.Docker.Logs(ctx, coreContainer)
@@ -130,11 +191,78 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 			logs = logs[len(logs)-4000:]
 		}
 		if len(logs) > 0 {
-			return false, fmt.Errorf("Core Management API did not become ready: %w; bounded Core output: %s", err, strings.TrimSpace(string(logs)))
+			return result, fmt.Errorf("Core Management API did not become ready: %w; bounded Core output: %s", err, strings.TrimSpace(string(logs)))
 		}
-		return false, fmt.Errorf("Core Management API did not become ready: %w", err)
+		return result, fmt.Errorf("Core Management API did not become ready: %w", err)
 	}
-	return true, nil
+	result.Created = true
+	return result, nil
+}
+
+type dockerEngineEnsurer interface {
+	EnsureAvailable(context.Context) (domain.DockerProviderStatus, error)
+}
+
+func ensureDockerProvider(ctx context.Context, provider domain.DockerProvider) (domain.DockerProviderStatus, error) {
+	status := provider.Probe(ctx)
+	if status.Available {
+		return status, nil
+	}
+	if ensurer, ok := provider.(dockerEngineEnsurer); ok {
+		return ensurer.EnsureAvailable(ctx)
+	}
+	return status, nil
+}
+
+// describeCoreMountFailure replaces Docker's host-path-bearing bind error with
+// a stable, actionable diagnostic. Paths from target profiles and the local
+// credential store must never be copied into CLI JSONL events rendered by
+// Studio.
+func describeCoreMountFailure(err error, request domain.DockerContainerRequest, target string) error {
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "bind source path does not exist") {
+		return err
+	}
+	role := "a required Core runtime mount"
+	if dockerErrorReferencesMountSource(err.Error(), request.StagedBinary) {
+		role = "the staged Core binary"
+	} else {
+		for _, mount := range request.Mounts {
+			if dockerErrorReferencesMountSource(err.Error(), mount.Source) {
+				switch {
+				case mount.Target == "/var/lib/liapoldus":
+					role = "the Core state directory"
+				case mount.Target == "/run/secrets":
+					role = "the temporary Core bootstrap-token directory"
+				case strings.HasPrefix(mount.Target, "/liapoldus/tls/"):
+					role = "a Core TLS asset"
+				}
+				break
+			}
+		}
+	}
+	return fmt.Errorf("docker_mount_source_unavailable: Docker cannot access %s for target %s; verify the selected Docker context can bind-mount this host location", role, target)
+}
+
+func dockerErrorReferencesMountSource(message, source string) bool {
+	if source == "" {
+		return false
+	}
+	if strings.Contains(message, source) {
+		return true
+	}
+	// macOS aliases such as /tmp → /private/tmp can be canonicalized by Docker
+	// Desktop/OrbStack before they are echoed in a bind-mount error. Resolve the
+	// host-side spelling only for matching; never include either path in output.
+	canonical, err := filepath.EvalSymlinks(source)
+	return err == nil && canonical != source && strings.Contains(message, canonical)
+}
+
+func parseDockerCoreInspect(body []byte) (dockerInspectContainer, error) {
+	var containers []dockerInspectContainer
+	if err := json.Unmarshal(body, &containers); err != nil || len(containers) != 1 {
+		return dockerInspectContainer{}, errors.New("Core container returned invalid status")
+	}
+	return containers[0], nil
 }
 
 func (r Runner) bootstrapManagementCredential(ctx context.Context, target domain.Target, newState bool) (string, error) {
@@ -166,11 +294,14 @@ func (r Runner) bootstrapManagementCredential(ctx context.Context, target domain
 	return token, nil
 }
 
-func writeBootstrapToken(token string) (string, error) {
+func writeBootstrapToken(token, parentDirectory string) (string, error) {
 	if len(token) < 32 || len(token) > 2048 || strings.ContainsAny(token, "\x00\r\n") {
 		return "", errors.New("invalid bootstrap credential")
 	}
-	directory, err := os.MkdirTemp("", "liapoldus-core-secret-")
+	if !filepath.IsAbs(parentDirectory) {
+		return "", errors.New("invalid Core state directory")
+	}
+	directory, err := os.MkdirTemp(parentDirectory, ".core-bootstrap-")
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +342,7 @@ func coreContainerRequest(target domain.Target, label, network, stagedCore, toke
 	managementListen := listenOnAllInterfaces(target.Bootstrap.ManagementListen, managementPort)
 	controlPort, err := listenPort(target.Bootstrap.ControlListen, 18181)
 	if err != nil {
-		return domain.DockerContainerRequest{}, errors.New("Core plugin-control listen port is invalid")
+		return domain.DockerContainerRequest{}, errors.New("Core service-control listen port is invalid")
 	}
 	if _, err := os.Stat(target.Bootstrap.ManagementCertificate); err != nil {
 		return domain.DockerContainerRequest{}, errors.New("Core Management TLS certificate is unavailable")
@@ -246,13 +377,14 @@ func coreContainerRequest(target domain.Target, label, network, stagedCore, toke
 		return domain.DockerContainerRequest{}, errors.New("Core state storage is unavailable")
 	}
 	mounts = append(mounts, domain.DockerMount{Source: stateDirectory, Target: "/var/lib/liapoldus", ReadOnly: false})
-	if tokenDirectory != "" {
-		mounts = append(mounts, domain.DockerMount{Source: tokenDirectory, Target: "/run/secrets", ReadOnly: false})
-	}
 	controlPublicURL := fmt.Sprintf("https://%s:%d", coreContainer, controlPort)
 	environment := map[string]string{"CORE_SQLITE_PATH": "/var/lib/liapoldus/" + filepath.Base(target.StatePath)}
 	if tokenDirectory != "" {
-		environment["CORE_INIT_MANAGEMENT_TOKEN_FILE"] = "/run/secrets/management-token"
+		relativeTokenDirectory, err := filepath.Rel(stateDirectory, tokenDirectory)
+		if err != nil || relativeTokenDirectory == "." || relativeTokenDirectory == ".." || strings.HasPrefix(relativeTokenDirectory, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeTokenDirectory) {
+			return domain.DockerContainerRequest{}, errors.New("Core bootstrap credential must be inside the mounted state directory")
+		}
+		environment["CORE_INIT_MANAGEMENT_TOKEN_FILE"] = "/var/lib/liapoldus/" + filepath.ToSlash(filepath.Join(relativeTokenDirectory, "management-token"))
 		environment["CORE_INIT_MANAGEMENT_LISTEN"] = managementListen
 		environment["CORE_INIT_MANAGEMENT_CERTIFICATE"] = "/liapoldus/tls/management.crt"
 		environment["CORE_INIT_MANAGEMENT_KEY"] = "/liapoldus/tls/management.key"
@@ -372,9 +504,9 @@ func (r Runner) dockerCoreStatus(ctx context.Context, target domain.Target, labe
 		if inspectErr != nil {
 			return nil, inspectErr
 		}
-		var state dockerCoreState
-		if json.Unmarshal(body, &state) != nil {
-			return nil, errors.New("Core container returned invalid status")
+		state, statusErr := parseDockerCoreState(body)
+		if statusErr != nil {
+			return nil, statusErr
 		}
 		running := state.Running || state.Status == "running"
 		result["running"] = running
@@ -389,6 +521,38 @@ func (r Runner) dockerCoreStatus(ctx context.Context, target domain.Target, labe
 		break
 	}
 	return result, nil
+}
+
+// inspectTargetCore returns Core only when its container is present in the
+// selected target's exact runtime-label scope. Core lifecycle commands must
+// never use stopDockerRuntime: that operation intentionally tears down the
+// complete service stack and its network.
+func (r Runner) inspectTargetCore(ctx context.Context, label string) (dockerInspectContainer, bool, error) {
+	names, err := r.Docker.ListContainers(ctx, label)
+	if err != nil {
+		return dockerInspectContainer{}, false, err
+	}
+	for _, name := range names {
+		if name != coreContainer {
+			continue
+		}
+		body, err := r.Docker.Inspect(ctx, coreContainer)
+		if err != nil {
+			return dockerInspectContainer{}, false, err
+		}
+		container, err := parseDockerCoreInspect(body)
+		if err != nil {
+			return dockerInspectContainer{}, false, err
+		}
+		if container.Config.Labels["com.liapoldus.runtime"] != label {
+			return dockerInspectContainer{}, false, errors.New("Core container is not owned by the selected target")
+		}
+		if strings.TrimSpace(container.State.Status) == "" || (container.State.Running && container.State.Status != "running") {
+			return dockerInspectContainer{}, false, errors.New("Core container returned invalid status")
+		}
+		return container, true, nil
+	}
+	return dockerInspectContainer{}, false, nil
 }
 
 func (r Runner) stopDockerRuntime(ctx context.Context, target domain.Target, label string) ([]string, error) {
@@ -480,26 +644,41 @@ func (r Runner) coreDockerCommand(ctx context.Context, action string, target dom
 	label := runtimeLabel("target", target.Name)
 	switch action {
 	case "start":
-		created, err := r.startDockerCore(ctx, target, label)
+		started, err := r.startDockerCore(ctx, target, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "running": true, "created": created})
+		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "running": true, "created": started.Created, "updated": started.Updated})
 	case "stop":
-		names, err := r.stopDockerRuntime(ctx, target, label)
+		container, exists, err := r.inspectTargetCore(ctx, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, map[string]any{"target": target.Name, "stopped": names})
+		if !exists {
+			return fail(stderr, application.ExitTarget, "Core container is not present in the selected target")
+		}
+		stopped := container.State.Running || container.State.Status == "running"
+		if stopped {
+			if err := r.Docker.StopContainer(ctx, coreContainer); err != nil {
+				return fail(stderr, application.ExitTarget, fmt.Sprintf("stop Core container: %v", err))
+			}
+		}
+		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "stopped": stopped})
 	case "restart":
-		if _, err := r.stopDockerRuntime(ctx, target, label); err != nil {
-			return fail(stderr, application.ExitTarget, err.Error())
-		}
-		created, err := r.startDockerCore(ctx, target, label)
+		_, exists, err := r.inspectTargetCore(ctx, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
-		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "running": true, "created": created, "restarted": true})
+		if !exists {
+			return fail(stderr, application.ExitTarget, "Core container is not present in the selected target; start it first")
+		}
+		if err := r.Docker.RestartContainer(ctx, coreContainer); err != nil {
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("restart Core container: %v", err))
+		}
+		if err := r.waitDockerCore(ctx, target, 35*time.Second); err != nil {
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core container restarted but its Management API is unreachable: %v", err))
+		}
+		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "running": true, "restarted": true})
 	case "status":
 		result, err := r.dockerCoreStatus(ctx, target, label)
 		if err != nil {

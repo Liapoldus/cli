@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,9 +53,10 @@ func TestCredentialSetAndStatusNeverEmitOrPersistToken(t *testing.T) {
 		t.Fatalf("status code=%d output=%s", code, output.String())
 	}
 	var status struct {
-		State string `json:"state"`
+		State         string `json:"state"`
+		CredentialRef string `json:"credentialRef"`
 	}
-	if err := json.Unmarshal(output.Bytes(), &status); err != nil || status.State != "configured" || strings.Contains(output.String(), secret) {
+	if err := json.Unmarshal(output.Bytes(), &status); err != nil || status.State != "configured" || status.CredentialRef != "" || strings.Contains(output.String(), secret) || strings.Contains(output.String(), "credentialRef") {
 		t.Fatalf("status=%+v output=%s err=%v", status, output.String(), err)
 	}
 }
@@ -102,6 +106,12 @@ func TestCoreStartCreatesAndStoresTokenOnlyForFreshState(t *testing.T) {
 	if docker.tokenDirectory == "" {
 		t.Fatal("Core container did not receive the one-time token mount")
 	}
+	if filepath.Dir(docker.tokenDirectory) != filepath.Dir(target.StatePath) {
+		t.Fatalf("bootstrap token is outside the mounted Core state directory: token=%q state=%q", docker.tokenDirectory, filepath.Dir(target.StatePath))
+	}
+	if strings.Contains(strings.Join(docker.environment, " "), "/run/secrets") {
+		t.Fatalf("bootstrap token unexpectedly uses a separate host bind mount: %v", docker.environment)
+	}
 	if _, err := os.Stat(docker.tokenDirectory); !os.IsNotExist(err) {
 		t.Fatalf("one-time token directory was not removed: %v", err)
 	}
@@ -115,19 +125,91 @@ func TestCoreStartDoesNotReplaceCredentialForExistingState(t *testing.T) {
 	target, _ := dockerCoreTestTarget(t, false)
 	target.StatePath = statePath
 	vault := &memoryCredentialVault{values: make(map[string]string)}
-	docker := &dockerRuntimeStub{}
+	docker := &dockerRuntimeStub{containers: []string{coreContainer}}
 	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: vault, CredentialVault: vault, Docker: docker,
 		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return healthyCoreClient{}, nil }}
 	var output bytes.Buffer
 	if code := runner.Run([]string{"core", "start", "--target", "local"}, &output, &output); code == application.ExitOK || !strings.Contains(output.String(), "Core management credential is unavailable") {
 		t.Fatalf("existing state was started without its token: code=%d output=%s", code, output.String())
 	}
-	if docker.runCount != 0 {
-		t.Fatalf("existing Core was started without its existing credential: runs=%d", docker.runCount)
+	if docker.runCount != 0 || len(docker.stopped) != 0 || len(docker.removed) != 0 {
+		t.Fatalf("existing Core was modified without its credential: runs=%d stopped=%v removed=%v", docker.runCount, docker.stopped, docker.removed)
 	}
 	body, err := os.ReadFile(statePath)
 	if err != nil || string(body) != "preserved-state" {
 		t.Fatalf("state changed: body=%q err=%v", body, err)
+	}
+}
+
+func TestCoreStartReplacesOnlyTargetOwnedContainerWhenConfiguredBinaryChanges(t *testing.T) {
+	target, _ := dockerCoreTestTarget(t, true)
+	stateBefore, err := os.ReadFile(target.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreBinary, err := os.ReadFile(target.CoreBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(coreBinary)
+	currentDigest := hex.EncodeToString(digest[:])
+	label := runtimeLabel("target", target.Name)
+	docker := &dockerRuntimeStub{
+		containers: []string{coreContainer, "liapoldus-echo", "liapoldus-server"},
+		inspectBody: []byte(`[{
+			"State":{"Status":"running","Running":true},
+			"Config":{"Image":"alpine:latest","Labels":{
+				"com.liapoldus.runtime":"` + label + `",
+				"com.liapoldus.core.binary.sha256":"` + strings.Repeat("a", 64) + `"
+			}}
+		}]`),
+	}
+	vault := &memoryCredentialVault{values: map[string]string{target.CredentialRef: "existing-management-token-which-is-long-enough"}}
+	runner := Runner{
+		Registry: targetRegistryStub{target: target}, Credentials: vault, CredentialVault: vault, Docker: docker,
+		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return healthyCoreClient{}, nil },
+	}
+	var output bytes.Buffer
+	if code := runner.Run([]string{"core", "start", "--target", "local"}, &output, &output); code != application.ExitOK {
+		t.Fatalf("start code=%d output=%s", code, output.String())
+	}
+	var result struct {
+		Created bool `json:"created"`
+		Updated bool `json:"updated"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil || !result.Created || !result.Updated {
+		t.Fatalf("Core update result=%+v output=%s err=%v", result, output.String(), err)
+	}
+	if len(docker.stopped) != 1 || docker.stopped[0] != coreContainer || len(docker.removed) != 1 || docker.removed[0] != coreContainer {
+		t.Fatalf("update affected unexpected containers: stopped=%v removed=%v", docker.stopped, docker.removed)
+	}
+	if docker.runCount != 1 || docker.coreRequest.CoreBinaryDigest != currentDigest {
+		t.Fatalf("updated Core request missing current binary digest: runs=%d request=%+v", docker.runCount, docker.coreRequest)
+	}
+	stateAfter, err := os.ReadFile(target.StatePath)
+	if err != nil || !bytes.Equal(stateBefore, stateAfter) {
+		t.Fatalf("Core state changed during binary refresh: before=%q after=%q err=%v", stateBefore, stateAfter, err)
+	}
+}
+
+func TestCoreStartRefusesToReplaceContainerOwnedByAnotherTarget(t *testing.T) {
+	target, _ := dockerCoreTestTarget(t, true)
+	docker := &dockerRuntimeStub{
+		containers: []string{coreContainer},
+		inspectBody: []byte(`[{"State":{"Status":"running","Running":true},"Config":{"Image":"alpine:latest","Labels":{
+			"com.liapoldus.runtime":"` + runtimeLabel("target", "other") + `",
+			"com.liapoldus.core.binary.sha256":"` + strings.Repeat("a", 64) + `"
+		}}}]`),
+	}
+	vault := &memoryCredentialVault{values: map[string]string{target.CredentialRef: "existing-management-token-which-is-long-enough"}}
+	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: vault, CredentialVault: vault, Docker: docker,
+		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return healthyCoreClient{}, nil }}
+	var output bytes.Buffer
+	if code := runner.Run([]string{"core", "start", "--target", "local"}, &output, &output); code == application.ExitOK || !strings.Contains(output.String(), "not owned by the selected target") {
+		t.Fatalf("foreign Core container was not rejected: code=%d output=%s", code, output.String())
+	}
+	if len(docker.stopped) != 0 || len(docker.removed) != 0 || docker.runCount != 0 {
+		t.Fatalf("foreign Core container was modified: stopped=%v removed=%v runs=%d", docker.stopped, docker.removed, docker.runCount)
 	}
 }
 
@@ -187,13 +269,19 @@ func (healthyCoreClient) Apply(context.Context, domain.ConfigBundleRequest, stri
 func (healthyCoreClient) Operation(context.Context, string) (domain.OperationResponse, error) {
 	return domain.OperationResponse{}, nil
 }
-func (healthyCoreClient) PluginMetadata(context.Context, string, string) (json.RawMessage, error) {
+func (healthyCoreClient) ResolveOperations(context.Context, string, []string) ([]domain.OperationReference, error) {
+	return nil, nil
+}
+func (healthyCoreClient) ServiceMetadata(context.Context, string, string) (json.RawMessage, error) {
 	return json.RawMessage(`{}`), nil
 }
-func (healthyCoreClient) RegisterPlugin(context.Context, domain.PluginRegistrationMetadata) (json.RawMessage, error) {
+func (healthyCoreClient) ServiceAdminQuery(context.Context, string, string, string) (json.RawMessage, error) {
+	return json.RawMessage(`{"items":[]}`), nil
+}
+func (healthyCoreClient) RegisterService(context.Context, domain.ServiceRegistrationMetadata) (json.RawMessage, error) {
 	return json.RawMessage(`{}`), nil
 }
-func (healthyCoreClient) EnsurePluginLink(context.Context, domain.PluginLinkPolicyRequest, string) (json.RawMessage, error) {
+func (healthyCoreClient) EnsureServiceLink(context.Context, domain.ServiceLinkPolicyRequest, string) (json.RawMessage, error) {
 	return json.RawMessage(`{}`), nil
 }
 
@@ -203,24 +291,45 @@ type dockerRuntimeStub struct {
 	environment    []string
 	runCount       int
 	containers     []string
+	stopped        []string
+	started        []string
+	restarted      []string
+	removed        []string
+	networkRemoved []string
+	inspectBody    []byte
+	coreRequest    domain.DockerContainerRequest
 }
 
 func (*dockerRuntimeStub) Probe(context.Context) domain.DockerProviderStatus {
 	return domain.DockerProviderStatus{ID: "docker", Available: true}
 }
 func (*dockerRuntimeStub) NetworkCreate(context.Context, string, string) error { return nil }
-func (*dockerRuntimeStub) NetworkRemove(context.Context, string) error         { return nil }
+func (stub *dockerRuntimeStub) NetworkRemove(_ context.Context, name string) error {
+	stub.networkRemoved = append(stub.networkRemoved, name)
+	return nil
+}
 func (stub *dockerRuntimeStub) RunContainer(_ context.Context, request domain.DockerContainerRequest) error {
 	stub.runCount++
+	if request.Name == coreContainer {
+		stub.coreRequest = request
+	}
 	for key, value := range request.Environment {
 		stub.environment = append(stub.environment, key+"="+value)
 	}
+	var stateMount string
 	for _, mount := range request.Mounts {
-		if mount.Target != "/run/secrets" {
-			continue
+		if mount.Target == "/var/lib/liapoldus" {
+			stateMount = mount.Source
+			break
 		}
-		stub.tokenDirectory = mount.Source
-		path := filepath.Join(mount.Source, "management-token")
+	}
+	if tokenFile := request.Environment["CORE_INIT_MANAGEMENT_TOKEN_FILE"]; tokenFile != "" {
+		const containerStateRoot = "/var/lib/liapoldus/"
+		if stateMount == "" || !strings.HasPrefix(tokenFile, containerStateRoot) {
+			return errors.New("Core bootstrap token is not scoped to the state mount")
+		}
+		path := filepath.Join(stateMount, filepath.FromSlash(strings.TrimPrefix(tokenFile, containerStateRoot)))
+		stub.tokenDirectory = filepath.Dir(path)
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -236,11 +345,28 @@ func (stub *dockerRuntimeStub) RunContainer(_ context.Context, request domain.Do
 func (stub *dockerRuntimeStub) ListContainers(context.Context, string) ([]string, error) {
 	return append([]string(nil), stub.containers...), nil
 }
-func (*dockerRuntimeStub) StopContainer(context.Context, string) error   { return nil }
-func (*dockerRuntimeStub) RemoveContainer(context.Context, string) error { return nil }
-func (*dockerRuntimeStub) Logs(context.Context, string) ([]byte, error)  { return nil, nil }
-func (*dockerRuntimeStub) Inspect(context.Context, string) ([]byte, error) {
-	return []byte(`{"Status":"running","Running":true}`), nil
+func (stub *dockerRuntimeStub) StopContainer(_ context.Context, name string) error {
+	stub.stopped = append(stub.stopped, name)
+	return nil
+}
+func (stub *dockerRuntimeStub) StartContainer(_ context.Context, name string) error {
+	stub.started = append(stub.started, name)
+	return nil
+}
+func (stub *dockerRuntimeStub) RestartContainer(_ context.Context, name string) error {
+	stub.restarted = append(stub.restarted, name)
+	return nil
+}
+func (stub *dockerRuntimeStub) RemoveContainer(_ context.Context, name string) error {
+	stub.removed = append(stub.removed, name)
+	return nil
+}
+func (*dockerRuntimeStub) Logs(context.Context, string) ([]byte, error) { return nil, nil }
+func (stub *dockerRuntimeStub) Inspect(context.Context, string) ([]byte, error) {
+	if len(stub.inspectBody) != 0 {
+		return stub.inspectBody, nil
+	}
+	return []byte(`[{"State":{"Status":"running","Running":true}}]`), nil
 }
 func (*dockerRuntimeStub) Exec(context.Context, string, string, []string) ([]byte, error) {
 	return nil, nil

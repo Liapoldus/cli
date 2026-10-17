@@ -128,10 +128,10 @@ type ArtifactRegistry interface {
 	Remove(id, version, platform string) error
 }
 
-// PluginRegistrationMetadata is the only plugin data the CLI sends to Core.
+// ServiceRegistrationMetadata is the only service data the CLI sends to Core.
 // Live manifest, schema, identity and readiness are fetched by Core through
-// the Plugin SDK REST client and are never requested by this process.
-type PluginRegistrationMetadata struct {
+// the Service SDK REST client and are never requested by this process.
+type ServiceRegistrationMetadata struct {
 	ArtifactID      string `json:"artifactId"`
 	ArtifactVersion string `json:"artifactVersion"`
 	Digest          string `json:"digest"`
@@ -183,6 +183,7 @@ type DockerProviderStatus struct {
 type DockerContainerRequest struct {
 	Name               string            `json:"name"`
 	Image              string            `json:"image"`
+	CoreBinaryDigest   string            `json:"coreBinaryDigest,omitempty"`
 	Network            string            `json:"network"`
 	NetworkAliases     []string          `json:"networkAliases,omitempty"`
 	Platform           string            `json:"platform,omitempty"`
@@ -217,6 +218,8 @@ type DockerProvider interface {
 	RunContainer(context.Context, DockerContainerRequest) error
 	ListContainers(context.Context, string) ([]string, error)
 	StopContainer(context.Context, string) error
+	StartContainer(context.Context, string) error
+	RestartContainer(context.Context, string) error
 	RemoveContainer(context.Context, string) error
 	Logs(context.Context, string) ([]byte, error)
 	Inspect(context.Context, string) ([]byte, error)

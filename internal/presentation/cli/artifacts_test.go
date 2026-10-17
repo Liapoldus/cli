@@ -13,10 +13,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Liapoldus/cli/internal/application"
 	"github.com/Liapoldus/cli/internal/domain"
 	"github.com/Liapoldus/cli/internal/infrastructure/artifacts"
 	"github.com/Liapoldus/cli/internal/infrastructure/git"
@@ -89,6 +91,117 @@ func TestRuntimeStartRequiresExplicitArtifactTrust(t *testing.T) {
 	}
 }
 
+func TestRuntimeStartReconcilesOnlyStoppedKnownServiceContainers(t *testing.T) {
+	docker := &runtimeReconcileDocker{dockerRuntimeStub: &dockerRuntimeStub{}, states: map[string][]byte{
+		"liapoldus-echo":   []byte(`[{"Name":"/liapoldus-echo","State":{"Status":"exited","Running":false}}]`),
+		"liapoldus-server": []byte(`[{"Name":"/liapoldus-server","State":{"Status":"dead","Running":false}}]`),
+	}}
+	plan := domain.RuntimePlan{Services: []domain.RuntimeServiceArtifact{
+		{Artifact: domain.Artifact{ID: "echo"}},
+		{Artifact: domain.Artifact{ID: "server"}},
+	}}
+	cleaned, err := reconcileStoppedRuntimeServices(context.Background(), docker, []string{"liapoldus-core", "liapoldus-echo", "liapoldus-server"}, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cleaned, []string{"liapoldus-echo", "liapoldus-server"}) || !reflect.DeepEqual(docker.removed, cleaned) {
+		t.Fatalf("stale containers not reconciled exactly: cleaned=%v removed=%v", cleaned, docker.removed)
+	}
+}
+
+func TestRuntimeStartDoesNotMutateWhenTargetHasLiveOrUnknownContainers(t *testing.T) {
+	plan := domain.RuntimePlan{Services: []domain.RuntimeServiceArtifact{{Artifact: domain.Artifact{ID: "echo"}}, {Artifact: domain.Artifact{ID: "server"}}}}
+	tests := []struct {
+		name      string
+		existing  []string
+		states    map[string][]byte
+		wantError string
+	}{
+		{
+			name:     "live service blocks all cleanup",
+			existing: []string{"liapoldus-echo", "liapoldus-server"},
+			states: map[string][]byte{
+				"liapoldus-echo":   []byte(`[{"Name":"/liapoldus-echo","State":{"Status":"exited"}}]`),
+				"liapoldus-server": []byte(`[{"Name":"/liapoldus-server","State":{"Status":"running","Running":true}}]`),
+			},
+			wantError: "runtime_exists",
+		},
+		{
+			name:      "unknown target-labeled container blocks cleanup",
+			existing:  []string{"liapoldus-other"},
+			wantError: "runtime_exists",
+		},
+		{
+			name:      "invalid inspect blocks cleanup",
+			existing:  []string{"liapoldus-echo"},
+			states:    map[string][]byte{"liapoldus-echo": []byte(`not-json`)},
+			wantError: "invalid container state",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			docker := &runtimeReconcileDocker{dockerRuntimeStub: &dockerRuntimeStub{}, states: test.states}
+			_, err := reconcileStoppedRuntimeServices(context.Background(), docker, test.existing, plan)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error=%v want substring %q", err, test.wantError)
+			}
+			if len(docker.removed) != 0 {
+				t.Fatalf("unsafe partial cleanup: %v", docker.removed)
+			}
+		})
+	}
+}
+
+type runtimeReconcileDocker struct {
+	*dockerRuntimeStub
+	states  map[string][]byte
+	removed []string
+}
+
+func (docker *runtimeReconcileDocker) Inspect(_ context.Context, name string) ([]byte, error) {
+	return docker.states[name], nil
+}
+
+func (docker *runtimeReconcileDocker) RemoveContainer(_ context.Context, name string) error {
+	docker.removed = append(docker.removed, name)
+	return nil
+}
+
+func TestRuntimeServiceActionsTargetOnlyAContainerInTheSelectedTarget(t *testing.T) {
+	target, _ := dockerCoreTestTarget(t, true)
+	docker := &dockerRuntimeStub{containers: []string{"liapoldus-core", "liapoldus-echo", "liapoldus-server"}}
+	runner := Runner{
+		Registry:    targetRegistryStub{target: target},
+		Credentials: credentialProviderStub{value: "management-token"},
+		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return readyServiceCoreClient{}, nil },
+		Artifacts:   artifacts.Registry{Path: filepath.Join(t.TempDir(), "artifacts.json")},
+		Docker:      runningRuntimeActionDocker{dockerRuntimeStub: docker},
+	}
+	for _, action := range []string{"start", "stop", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			var output strings.Builder
+			code := runner.runtimeOperation(context.Background(), action, []string{"--target", "local", "--service", "echo"}, &output, &output)
+			if code != application.ExitOK || !strings.Contains(output.String(), `"serviceId":"echo"`) {
+				t.Fatalf("action %s returned code=%d output=%s", action, code, output.String())
+			}
+		})
+	}
+	if !reflect.DeepEqual(docker.started, []string{"liapoldus-echo"}) || !reflect.DeepEqual(docker.stopped, []string{"liapoldus-echo"}) || !reflect.DeepEqual(docker.restarted, []string{"liapoldus-echo"}) {
+		t.Fatalf("service actions escaped the selected container: start=%v stop=%v restart=%v", docker.started, docker.stopped, docker.restarted)
+	}
+
+	var output strings.Builder
+	code := runner.runtimeOperation(context.Background(), "stop", []string{"--target", "local", "--service", "unrelated"}, &output, &output)
+	if code == application.ExitOK || strings.Contains(output.String(), `"action":"stop"`) || len(docker.stopped) != 1 {
+		t.Fatalf("an unlisted service container must not be controlled: code=%d output=%s calls=%v", code, output.String(), docker.stopped)
+	}
+	output.Reset()
+	code = runner.runtimeOperation(context.Background(), "stop", []string{"--target", "local", "--service", "core"}, &output, &output)
+	if code == application.ExitOK || len(docker.stopped) != 1 {
+		t.Fatalf("Core must not be addressable as a service action: code=%d output=%s calls=%v", code, output.String(), docker.stopped)
+	}
+}
+
 func TestRuntimeContainerAssignsDistinctPlacementPerReplica(t *testing.T) {
 	root := t.TempDir()
 	caFile := filepath.Join(root, "ca.pem")
@@ -100,7 +213,7 @@ func TestRuntimeContainerAssignsDistinctPlacementPerReplica(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"server", "echo"} {
-		identity := "spiffe://liapoldus/plugin/" + id + "/" + id + "/" + id + "-incarnation"
+		identity := "spiffe://liapoldus/service/" + id + "/" + id + "/" + id + "-incarnation"
 		writeRuntimeIdentityPair(t, tlsDirectory, id+".crt", id+".key", identity)
 		writeRuntimeIdentityPair(t, tlsDirectory, id+"-peer.crt", id+"-peer.key", identity)
 		if err := os.WriteFile(filepath.Join(tlsDirectory, "revoked.pem"), []byte("test"), 0o600); err != nil {
@@ -123,9 +236,25 @@ func TestRuntimeContainerAssignsDistinctPlacementPerReplica(t *testing.T) {
 		if got, want := request.Environment["LIAPOLDUS_PLACEMENT_ID"], "container-"+id; got != want {
 			t.Fatalf("%s placement ID = %q, want %q", id, got, want)
 		}
-		if got, want := request.Environment["LIAPOLDUS_PEER_IDENTITY"], "spiffe://liapoldus/plugin/"+id+"/"+id+"/"+id+"-incarnation"; got != want {
+		if request.Environment["LIAPOLDUS_SERVICE_ID"] != id {
+			t.Fatalf("service ID missing from runtime environment: %v", request.Environment)
+		}
+		if _, exists := request.Environment["LIAPOLDUS_PLUGIN_ID"]; exists {
+			t.Fatal("retired runtime environment alias is present")
+		}
+		if got, want := request.Environment["LIAPOLDUS_PEER_IDENTITY"], "spiffe://liapoldus/service/"+id+"/"+id+"/"+id+"-incarnation"; got != want {
 			t.Fatalf("%s peer identity = %q, want %q", id, got, want)
 		}
+	}
+}
+
+func TestRuntimeIdentityRejectsRetiredServiceNamespace(t *testing.T) {
+	directory := t.TempDir()
+	identity := "spiffe://liapoldus/plugin/echo/echo/incarnation"
+	writeRuntimeIdentityPair(t, directory, "echo.crt", "echo.key", identity)
+	writeRuntimeIdentityPair(t, directory, "echo-peer.crt", "echo-peer.key", identity)
+	if _, err := runtimePeerIdentity(filepath.Join(directory, "echo.crt"), filepath.Join(directory, "echo.key"), filepath.Join(directory, "echo-peer.crt"), filepath.Join(directory, "echo-peer.key"), "echo"); err == nil {
+		t.Fatal("retired identity namespace accepted")
 	}
 }
 
@@ -139,7 +268,7 @@ func TestRuntimeContainerSeparatesProductAndSDKPublicListeners(t *testing.T) {
 	if err := os.MkdirAll(tlsDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	identity := "spiffe://liapoldus/plugin/server/server/server-incarnation"
+	identity := "spiffe://liapoldus/service/server/server/server-incarnation"
 	writeRuntimeIdentityPair(t, tlsDirectory, "server.crt", "server.key", identity)
 	writeRuntimeIdentityPair(t, tlsDirectory, "server-peer.crt", "server-peer.key", identity)
 	if err := os.WriteFile(filepath.Join(tlsDirectory, "revoked.pem"), []byte("test"), 0o600); err != nil {
@@ -177,8 +306,8 @@ func TestRuntimePublicPortsRejectListenerCollision(t *testing.T) {
 
 func TestRuntimePeerIdentityRejectsCertificateThatCannotMatchCoreDirectory(t *testing.T) {
 	directory := t.TempDir()
-	writeRuntimeIdentityPair(t, directory, "server.crt", "server.key", "spiffe://liapoldus/plugin/server/server/server-incarnation")
-	writeRuntimeIdentityPair(t, directory, "server-peer.crt", "server-peer.key", "spiffe://liapoldus/plugin/server")
+	writeRuntimeIdentityPair(t, directory, "server.crt", "server.key", "spiffe://liapoldus/service/server/server/server-incarnation")
+	writeRuntimeIdentityPair(t, directory, "server-peer.crt", "server-peer.key", "spiffe://liapoldus/service/server")
 	if _, err := runtimePeerIdentity(filepath.Join(directory, "server.crt"), filepath.Join(directory, "server.key"), filepath.Join(directory, "server-peer.crt"), filepath.Join(directory, "server-peer.key"), "server"); err == nil || !strings.Contains(err.Error(), "must match the Core replica certificate identity") {
 		t.Fatalf("mismatched protocol identity error = %v", err)
 	}

@@ -35,7 +35,7 @@ CLI владеет операционным workflow вокруг Core:
 - plan/diff;
 - отправка bundle;
 - polling operation и безопасный exit code;
-- локальный Docker lifecycle Core и уже собранных plugin binaries.
+- локальный Docker lifecycle Core и уже собранных service binaries.
 
 CLI не является вторым редактором проекта. Он не изменяет source files и не
 выполняет Git commit за пользователя.
@@ -60,9 +60,11 @@ target-scoped и не хранятся в target JSON, bundle, logs или repor
 `credential set` принимает значение только через скрытый TTY prompt; Studio
 получает только состояние записи. CI передаёт одноразовый токен через stdin.
 Для нового local Core CLI генерирует token, сохраняет его в vault и передаёт
-в Docker через одноразовый файл 0600 в приватном bind mount. Token не попадает
-в Docker environment или inspect metadata; Core удаляет файл до открытия API и
-сохраняет verifier.
+в Docker через одноразовый файл 0600 внутри уже смонтированного Core state
+directory. Отдельный host bind mount из системного temp-каталога не создаётся:
+он может быть недоступен Docker VM на macOS. Token не попадает в Docker
+environment или inspect metadata; Core удаляет файл до открытия API и сохраняет
+verifier.
 
 ### Core
 
@@ -80,7 +82,7 @@ resolver или deployment-provider integration.
 При первом запуске local target adapter CLI запускает Core container, передаёт
 ему `CORE_SQLITE_PATH` и secure bootstrap references; Core создаёт initial
 settings state до открытия API. Management API публикуется только на loopback,
-а Plugin SDK control endpoint остаётся внутри временной Docker network. CLI не
+а Service SDK control endpoint остаётся внутри временной Docker network. CLI не
 импортирует внутренние Core packages и не открывает SQLite; remote targets
 работают только через Management API или явно установленный execution adapter.
 
@@ -93,7 +95,7 @@ settings state до открытия API. Management API публикуется 
 | Нормализованный bundle | конкретный CLI run и его immutable digest |
 | Применённый desired state | Core SQLite |
 | Active generation и rollout | Core SQLite + Core runtime observations |
-| Plugin/service binary provenance | deployment/operator layer, не CLI и не Core |
+| Service binary provenance | deployment/operator layer, не CLI и не Core |
 | Secrets | secure store/CI secret provider; не Git и не bundle body |
 
 Remote Git может быть declared source of truth проекта. В этом режиме Studio и
@@ -143,14 +145,14 @@ Core сохраняет единственный runtime composition root и Man
 
 ## 6. Runtime control-plane boundary
 
-Для локальной plugin отладки действует строго типизированный путь:
+Для локальной service отладки действует строго типизированный путь:
 
 ```text
-Studio → CLI → Core Management API → Plugin SDK REST API
+Studio → CLI → Core Management API → Service SDK REST API
 ```
 
-CLI запускает Core и plugin containers в одной Docker network, управляет
-staging и контейнерами, но не является Plugin SDK client. Он передаёт Core
+CLI запускает Core и service containers в одной Docker network, управляет
+staging и контейнерами, но не является Service SDK client. Он передаёт Core
 только artifact ID/version/digest,
 instance/replica IDs, control/peer endpoints и runtime status. Live manifest,
 config schema, identity, readiness и configuration generations получает и
@@ -163,6 +165,6 @@ config schema, identity, readiness и configuration generations получает
 Project reference. Runtime command и private service endpoints также берутся
 из этого manifest и валидируются до создания Docker network.
 
-Прямые CLI-вызовы plugin `/manifest`, `/config-schema`, `/identity`, `/ready` и
-`/reload` запрещены. Data plane не меняется: plugin вызывает другой plugin
-напрямую через `pluginprotocol`; Core и CLI business traffic не проксируют.
+Прямые CLI-вызовы service `/manifest`, `/config-schema`, `/identity`, `/ready` и
+`/reload` запрещены. Data plane не меняется: service вызывает другой service
+напрямую через `Wool`; Core и CLI business traffic не проксируют.

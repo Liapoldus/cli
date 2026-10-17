@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Liapoldus/cli/internal/domain"
 )
@@ -19,8 +20,9 @@ const maxOutputBytes = 1 << 20
 // Provider is a deliberately small Docker CLI adapter. It has no build
 // methods: binaries are operator-owned artifacts and Docker is runtime-only.
 type Provider struct {
-	BinaryPath string
-	Execute    func(context.Context, []string) ([]byte, error)
+	BinaryPath  string
+	Execute     func(context.Context, []string) ([]byte, error)
+	StartEngine func(context.Context) error
 }
 
 func Default() Provider {
@@ -55,14 +57,82 @@ func (provider Provider) run(ctx context.Context, args ...string) ([]byte, error
 
 func (provider Provider) Probe(ctx context.Context) domain.DockerProviderStatus {
 	status := domain.DockerProviderStatus{ID: "docker", BinaryPath: provider.BinaryPath, Platform: "linux/" + runtime.GOARCH}
+	if _, err := provider.run(ctx, "--version"); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			status.ErrorCode = "provider_missing"
+		} else {
+			status.ErrorCode = "provider_unavailable"
+		}
+		return status
+	}
 	version, err := provider.run(ctx, "version", "--format", "{{.Server.Version}}")
 	if err != nil {
-		status.ErrorCode = "provider_missing"
+		status.ErrorCode = "provider_unavailable"
 		return status
 	}
 	status.Version = strings.TrimSpace(string(version))
 	status.Available = status.Version != ""
+	if !status.Available {
+		status.ErrorCode = "provider_unavailable"
+	}
 	return status
+}
+
+// EnsureAvailable starts the locally installed Docker Engine when its CLI is
+// present but the daemon is stopped. It never installs Docker or changes the
+// selected context; it waits for the normal Docker API probe to succeed.
+func (provider Provider) EnsureAvailable(ctx context.Context) (domain.DockerProviderStatus, error) {
+	status := provider.Probe(ctx)
+	if status.Available || status.ErrorCode == "provider_missing" {
+		return status, nil
+	}
+	start := provider.StartEngine
+	if start == nil {
+		start = startLocalEngine
+	}
+	if err := start(ctx); err != nil {
+		return status, fmt.Errorf("docker engine start failed: %w", err)
+	}
+	deadline := time.NewTimer(45 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status = provider.Probe(ctx)
+		if status.Available {
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return status, ctx.Err()
+		case <-deadline.C:
+			return status, errors.New("docker engine did not become available within 45 seconds")
+		case <-ticker.C:
+		}
+	}
+}
+
+func startLocalEngine(ctx context.Context) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		command = exec.CommandContext(ctx, "open", "-a", "Docker")
+	case "linux":
+		command = exec.CommandContext(ctx, "systemctl", "start", "docker")
+	case "windows":
+		command = exec.CommandContext(ctx, "sc", "start", "com.docker.service")
+	default:
+		return fmt.Errorf("automatic Docker Engine start is unsupported on %s", runtime.GOOS)
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+		return err
+	}
+	return nil
 }
 
 func (provider Provider) NetworkCreate(ctx context.Context, name, label string) error {
@@ -102,7 +172,7 @@ func (provider Provider) RunContainer(ctx context.Context, request domain.Docker
 	}
 	stagedTarget := request.StagedBinaryTarget
 	if stagedTarget == "" {
-		stagedTarget = "/liapoldus/plugin"
+		stagedTarget = "/liapoldus/service"
 	}
 	if !validContainerPath(stagedTarget) {
 		return errors.New("invalid staged binary container path")
@@ -110,6 +180,12 @@ func (provider Provider) RunContainer(ctx context.Context, request domain.Docker
 	// Keep failed containers until the typed runtime operation collects bounded
 	// logs and removes them. Successful stop also removes them explicitly.
 	command := []string{"run", "--detach", "--read-only", "--name", request.Name, "--network", request.Network, "--label", "com.liapoldus.runtime=" + request.Label}
+	if request.CoreBinaryDigest != "" {
+		if len(request.CoreBinaryDigest) != 64 || strings.Trim(request.CoreBinaryDigest, "0123456789abcdef") != "" {
+			return errors.New("invalid Core binary digest")
+		}
+		command = append(command, "--label", "com.liapoldus.core.binary.sha256="+request.CoreBinaryDigest)
+	}
 	if request.Platform != "" {
 		command = append(command, "--platform", request.Platform)
 	}
@@ -173,9 +249,9 @@ func (provider Provider) RunContainer(ctx context.Context, request domain.Docker
 	}
 	command = append(command, "--entrypoint", entrypoint, request.Image)
 	if strings.TrimSpace(request.Command) != "" {
-		// Command is an optional, plugin-owned argument list entry. Runtime
+		// Command is an optional, service-owned argument list entry. Runtime
 		// binaries normally bootstrap from environment/configuration and must
-		// not receive a synthetic positional plugin id.
+		// not receive a synthetic positional service id.
 		command = append(command, request.Command)
 	}
 	command = append(command, request.Arguments...)
@@ -214,6 +290,22 @@ func (provider Provider) StopContainer(ctx context.Context, name string) error {
 	return err
 }
 
+func (provider Provider) StartContainer(ctx context.Context, name string) error {
+	if !validName(name) {
+		return errors.New("invalid Docker container name")
+	}
+	_, err := provider.run(ctx, "start", name)
+	return err
+}
+
+func (provider Provider) RestartContainer(ctx context.Context, name string) error {
+	if !validName(name) {
+		return errors.New("invalid Docker container name")
+	}
+	_, err := provider.run(ctx, "restart", "--time", "10", name)
+	return err
+}
+
 func (provider Provider) RemoveContainer(ctx context.Context, name string) error {
 	if !validName(name) {
 		return errors.New("invalid Docker container name")
@@ -233,7 +325,10 @@ func (provider Provider) Inspect(ctx context.Context, name string) ([]byte, erro
 	if !validName(name) {
 		return nil, errors.New("invalid Docker container name")
 	}
-	return provider.run(ctx, "inspect", "--format", "{{json .State}}", name)
+	// The presentation adapter projects this full record onto a safe summary
+	// before returning it to Studio. Keep the Docker-specific data here; never
+	// write the raw result to CLI stdout.
+	return provider.run(ctx, "inspect", name)
 }
 
 func (provider Provider) Exec(ctx context.Context, name, executable string, args []string) ([]byte, error) {

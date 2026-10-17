@@ -22,11 +22,14 @@ import (
 // Repository is the Git-backed project source used by the application layer.
 type Repository struct{}
 
-const WorkingTreeRevision = "WORKING_TREE"
+const WorkingTreeRevision = domain.WorkingTreeRevision
 
 func (Repository) ResolveRevision(ctx context.Context, projectPath, revision string) (string, error) {
 	if strings.TrimSpace(revision) == "" {
 		return "", domain.ErrInvalidRevision
+	}
+	if revision == WorkingTreeRevision {
+		return WorkingTreeRevision, nil
 	}
 	output, err := run(ctx, projectPath, "rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
@@ -78,7 +81,7 @@ func (Repository) Files(ctx context.Context, projectPath, revision string) ([]do
 
 // RuntimeArtifacts reads the exact immutable binaries declared by each
 // service in a Project revision. Legacy service manifests are rejected so a
-// runtime can never silently substitute another local binary by plugin ID.
+// runtime can never silently substitute another local binary by service ID.
 func (Repository) RuntimeArtifacts(ctx context.Context, projectPath, revision string) ([]domain.ArtifactReference, error) {
 	paths, err := treePaths(ctx, projectPath, revision)
 	if err != nil {
@@ -230,13 +233,49 @@ func treePaths(ctx context.Context, projectPath, revision string) ([]string, err
 		if err != nil {
 			return nil, fmt.Errorf("list working tree: %w", err)
 		}
-		return splitPaths(output), nil
+		paths, err := projectPaths(output)
+		if err != nil {
+			return nil, err
+		}
+		present := paths[:0]
+		for _, path := range paths {
+			if _, err := os.Lstat(filepath.Join(projectPath, filepath.FromSlash(path))); errors.Is(err, os.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return nil, fmt.Errorf("inspect working tree path %s: %w", path, err)
+			}
+			present = append(present, path)
+		}
+		return present, nil
 	}
 	output, err := run(ctx, projectPath, "ls-tree", "-r", "-z", "--name-only", revision)
 	if err != nil {
 		return nil, fmt.Errorf("list revision tree: %w", err)
 	}
-	return splitPaths(output), nil
+	return projectPaths(output)
+}
+
+// Reject obsolete runtime inputs rather than silently building an incomplete
+// bundle. Product settings and historical reports remain opaque bytes.
+func projectPaths(output string) ([]string, error) {
+	paths := splitPaths(output)
+	sort.Strings(paths)
+	for _, path := range paths {
+		clean := filepath.Clean(filepath.FromSlash(path))
+		if path == "" || filepath.IsAbs(path) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.ContainsRune(path, '\\') {
+			return nil, fmt.Errorf("invalid project path %q", path)
+		}
+		parts := strings.Split(path, "/")
+		if len(parts) < 3 {
+			continue
+		}
+		retiredManifest := len(parts) == 3 && parts[0] == "services" && parts[2] == "plugin.yaml"
+		retiredRuntime := parts[0] == "plugins" && (parts[2] == "plugin.yaml" || parts[2] == "service.yaml" || parts[2] == "settings.json" || parts[2] == "links")
+		if retiredManifest || retiredRuntime {
+			return nil, fmt.Errorf("retired runtime path %q: migrate to services/<id>/service.yaml, settings.json and links before delivery; preserve IDs and payload bytes", path)
+		}
+	}
+	return paths, nil
 }
 
 func splitPaths(output string) []string {
@@ -252,17 +291,17 @@ func splitPaths(output string) []string {
 
 func show(ctx context.Context, projectPath, revision, path string) ([]byte, error) {
 	if revision == WorkingTreeRevision {
-		clean, err := filepath.Abs(filepath.Join(projectPath, filepath.FromSlash(path)))
+		root, err := filepath.Abs(projectPath)
 		if err != nil {
 			return nil, err
 		}
-		root, err := filepath.Abs(projectPath)
-		if err != nil || clean != root && !strings.HasPrefix(clean, root+string(filepath.Separator)) {
-			return nil, errors.New("working tree path escapes project")
+		root, err = filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, err
 		}
-		info, err := os.Lstat(clean)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil, errors.New("working tree file is not a regular file")
+		clean, err := safeRegularFile(root, path)
+		if err != nil {
+			return nil, fmt.Errorf("working tree file is not safe: %w", err)
 		}
 		return os.ReadFile(clean)
 	}

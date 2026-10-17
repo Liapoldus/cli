@@ -38,7 +38,7 @@ func (r Runner) credential(ctx context.Context, args []string, stdout, stderr io
 	case "status":
 		provider := r.credentialProvider()
 		if provider == nil {
-			return encode(stdout, map[string]any{"target": target.Name, "credentialRef": target.CredentialRef, "state": "store_unavailable"})
+			return encode(stdout, map[string]any{"target": target.Name, "state": "store_unavailable"})
 		}
 		_, resolveErr := provider.Resolve(ctx, target.CredentialRef)
 		state := "configured"
@@ -51,7 +51,7 @@ func (r Runner) credential(ctx context.Context, args []string, stdout, stderr io
 		default:
 			return fail(stderr, application.ExitTarget, "credential status could not be read")
 		}
-		return encode(stdout, map[string]any{"target": target.Name, "credentialRef": target.CredentialRef, "state": state})
+		return encode(stdout, map[string]any{"target": target.Name, "state": state})
 	case "set":
 		vault := r.credentialVault()
 		if vault == nil {
@@ -85,7 +85,7 @@ func (r Runner) credential(ctx context.Context, args []string, stdout, stderr io
 		if err := vault.Store(ctx, target.CredentialRef, string(first)); err != nil {
 			return fail(stderr, application.ExitTarget, domain.ErrCredentialStore.Error())
 		}
-		return encode(stdout, map[string]any{"target": target.Name, "credentialRef": target.CredentialRef, "state": "configured"})
+		return encode(stdout, map[string]any{"target": target.Name, "state": "configured"})
 	case "remove":
 		if !options.confirm {
 			return fail(stderr, application.ExitArguments, "credential remove requires --confirm")
@@ -97,7 +97,7 @@ func (r Runner) credential(ctx context.Context, args []string, stdout, stderr io
 		if err := vault.Delete(ctx, target.CredentialRef); err != nil {
 			return fail(stderr, application.ExitTarget, domain.ErrCredentialStore.Error())
 		}
-		return encode(stdout, map[string]any{"target": target.Name, "credentialRef": target.CredentialRef, "state": "missing"})
+		return encode(stdout, map[string]any{"target": target.Name, "state": "missing"})
 	default:
 		return fail(stderr, application.ExitArguments, "unsupported credential subcommand")
 	}

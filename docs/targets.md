@@ -26,6 +26,11 @@ targets:
 хранятся. `credentialRef` — стабильный target-scoped указатель на системный
 credential vault; значение ключа недоступно из target profile.
 
+Endpoint не может содержать userinfo, query или fragment: доступ задаётся
+credential vault и mTLS, а не URL. Команды `target list`, `target inspect` и
+`target test` возвращают Studio безопасную сводку и health-результат без endpoint и
+внутренних путей профиля.
+
 Пример local target:
 
 ```json
@@ -59,9 +64,11 @@ credential vault; значение ключа недоступно из target p
 ```
 
 `local-process` — существующее имя transport для локального target profile; в
-текущем runtime Core и plugins всегда запускаются в Docker, host-process
-fallback отсутствует. `core start/stop/status/logs` управляют контейнером;
-remote API target не получает runtime/process access.
+текущем runtime Core и services всегда запускаются в Docker, host-process
+fallback отсутствует. `core stop/restart` затрагивают только принадлежащий
+выбранному target контейнер Core; сервисы, сеть и staging остаются нетронутыми.
+Для остановки всего runtime используется `runtime stop`. Remote API target не
+получает runtime/process access.
 
 `trafficReportPath` — необязательный project-relative путь к report, который
 создаёт CLI/Core observation pipeline. Он не может быть absolute или выходить
@@ -100,8 +107,11 @@ Local target может включать:
 
 Первый запуск local Core выполняется в Docker через `liapoldus core start` или
 `runtime start`. CLI создаёт случайный management token, сохраняет его в
-системном vault и монтирует одноразовый файл `0600`; token не передаётся в Docker
-environment. Core удаляет файл после чтения и сохраняет только verifier.
+системном vault и пишет одноразовый файл `0600` во временный каталог внутри уже
+смонтированного Core state directory. Не используется отдельный bind mount из
+системного temp-каталога: Docker VM может не видеть macOS `/var/folders`. Token не
+передаётся в Docker environment. Core удаляет файл после чтения и сохраняет
+только verifier.
 Повторный запуск не ротирует credential. Секретные значения не попадают в
 project files, Git, target profile, bundle, container metadata или logs.
 
@@ -119,16 +129,28 @@ registry пути к management/control certificate и key, replica client/serve
 registry. TLS references передаются Core как `CORE_INIT_*` environment values;
 секретный token передаётся только файлом. После bootstrap Core хранит settings
 в SQLite. Management API слушает container network, но Docker публикует его
-только на host loopback; Plugin SDK REST/control endpoints не публикуются.
+только на host loopback; Service SDK REST/control endpoints не публикуются.
 
-Для каждого runtime plugin в `runtime.tlsDirectory` CLI ожидает пары
-`<plugin>.crt`/`<plugin>.key` для SDK↔Core и `<plugin>-peer.crt`/
-`<plugin>-peer.key` для `pluginprotocol`. Peer certificate может иметь отдельный
+Для смены Core binary Studio использует typed `core binary inspect` → явное
+подтверждение exact SHA-256 → единый `core binary update`. CLI проверяет ELF
+архитектуру против платформы local target, запускает кандидат и сохраняет новый
+путь/digest в CLI-owned target registry только после готовности Management API.
+При ошибке запуска прежняя запись target остаётся; контейнер Core может быть
+остановлен, и восстановление выполняется `core start --target local`. Обновление
+пересоздаёт только Core container; SQLite/state path, credentials, сертификаты,
+Docker network и service containers сохраняются. SQLite migrations автоматически
+не откатываются. Если Core поднялся, но запись target registry не удалась, CLI
+останавливает и удаляет только candidate Core container; ошибку очистки сообщает
+отдельно.
+
+Для каждого runtime service в `runtime.tlsDirectory` CLI ожидает пары
+`<service>.crt`/`<service>.key` для SDK↔Core и `<service>-peer.crt`/
+`<service>-peer.key` для `Wool`. Peer certificate может иметь отдельный
 ключ, но его единственный URI SAN обязан совпадать с полным replica URI из
-Core-сертификата: `spiffe://liapoldus/plugin/<instance>/<replica>/<incarnation>`.
-Этот же URI передаётся plugin SDK как peer identity, а Core peer directory
+Core-сертификата: `spiffe://liapoldus/service/<instance>/<replica>/<incarnation>`.
+Этот же URI передаётся Service SDK как peer identity, а Core peer directory
 использует его для точного pin при вызове. Общий URI вида
-`spiffe://liapoldus/plugin/<plugin>` не подходит: mTLS handshake завершится
+`spiffe://liapoldus/service/<service>` не подходит: mTLS handshake завершится
 ошибкой проверки identity, даже если обе стороны доверяют одной CA. CLI
 проверяет это до создания контейнера и отказывает без ослабления pinning.
 
@@ -137,7 +159,7 @@ Docker runtime. Database backup/restore допускается только пр
 Core container и копирует SQLite-файл как opaque state; CLI не открывает SQLite
 и не использует непубличные Core packages.
 
-## Локальные порты plugin runtime
+## Локальные порты service runtime
 
 У выбранного `runtime.publicServiceId` CLI разделяет product HTTP listener и
 SDK-backed public API (`/healthz`, `/metrics`, диагностический peer endpoint):

@@ -74,6 +74,23 @@ func TestRegistryRejectsInvalidEndpoint(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsCredentialBearingEndpoint(t *testing.T) {
+	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
+	for _, endpoint := range []string{
+		"https://user:password@core.example.test",
+		"https://core.example.test?token=secret",
+		"https://core.example.test/#secret",
+	} {
+		err := registry.Add(domain.Target{
+			Name: "production", Transport: domain.TransportRemoteAPI, Endpoint: endpoint,
+			ClientCertFile: "/tls/client.crt", ClientKeyFile: "/tls/client.key",
+		})
+		if err == nil || !strings.Contains(err.Error(), "must not contain credentials") {
+			t.Errorf("endpoint %q error=%v", endpoint, err)
+		}
+	}
+}
+
 func TestRegistryRejectsHTTPSWithoutClientCertificate(t *testing.T) {
 	registry := Registry{Path: filepath.Join(t.TempDir(), "targets.json")}
 	err := registry.Add(domain.Target{Name: "production", Transport: domain.TransportRemoteAPI, Endpoint: "https://core.example"})

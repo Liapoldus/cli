@@ -87,19 +87,19 @@ jobs:
           path: core
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          repository: Liapoldus/plugin-sdk
+          repository: Liapoldus/service-sdk
           ref: f3cf649e450485691cef110111cf3a39c0deb32b
-          path: plugin-sdk
+          path: service-sdk
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: core/go.mod
           cache: true
           cache-dependency-path: core/go.sum
-      - name: Configure Core and Plugin SDK workspace
+      - name: Configure Core and Service SDK workspace
         run: |
-          go work init ./ ./core ./plugin-sdk
+          go work init ./ ./core ./service-sdk
           go work edit -go=1.26.0 go.work
-          go work edit -replace=github.com/Liapoldus/plugin-sdk/v2@v2.0.0=./plugin-sdk go.work
+          go work edit -replace=github.com/Liapoldus/service-sdk/v2@v2.0.0=./service-sdk go.work
       - name: Build Core
         run: go build -trimpath -o "$RUNNER_TEMP/core" ./cmd/core
         working-directory: core

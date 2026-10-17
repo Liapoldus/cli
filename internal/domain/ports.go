@@ -3,9 +3,11 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"io"
 )
 
-// ProjectSource reads an immutable project revision from Git.
+// ProjectSource reads immutable Git revisions and explicitly selected private
+// snapshots used by local development operations.
 type ProjectSource interface {
 	ResolveRevision(ctx context.Context, projectPath, revision string) (string, error)
 	WorkingTreeStatus(ctx context.Context, projectPath string) (string, error)
@@ -15,6 +17,19 @@ type ProjectSource interface {
 	ServiceSettings(ctx context.Context, projectPath, revision string) ([]Service, error)
 	Links(ctx context.Context, projectPath, revision string) ([]json.RawMessage, error)
 	ProjectID(ctx context.Context, projectPath, revision string) (string, error)
+}
+
+// ProjectSnapshot is an immutable, private copy of one development working
+// tree. Closing it removes only the temporary snapshot owned by its creator.
+type ProjectSnapshot interface {
+	RootPath() string
+	Close() error
+}
+
+// ProjectSnapshotter captures the safe, bundle-relevant files of a project
+// without changing the user's checkout.
+type ProjectSnapshotter interface {
+	Capture(ctx context.Context, projectPath string) (ProjectSnapshot, error)
 }
 
 // CredentialProvider resolves a secret reference without exposing the storage
@@ -38,9 +53,64 @@ type CoreClient interface {
 	Plan(ctx context.Context, request ConfigBundleRequest) (PlanResponse, error)
 	Apply(ctx context.Context, request ConfigBundleRequest, idempotencyKey string) (ApplyResponse, error)
 	Operation(ctx context.Context, operationID string) (OperationResponse, error)
-	PluginMetadata(ctx context.Context, pluginID, view string) (json.RawMessage, error)
-	RegisterPlugin(ctx context.Context, metadata PluginRegistrationMetadata) (json.RawMessage, error)
-	EnsurePluginLink(ctx context.Context, policy PluginLinkPolicyRequest, idempotencyKey string) (json.RawMessage, error)
+	ResolveOperations(ctx context.Context, scope string, keys []string) ([]OperationReference, error)
+	ServiceMetadata(ctx context.Context, serviceID, view string) (json.RawMessage, error)
+	ServiceAdminQuery(ctx context.Context, serviceID, pageID, resourceID string) (json.RawMessage, error)
+	RegisterService(ctx context.Context, metadata ServiceRegistrationMetadata) (json.RawMessage, error)
+	EnsureServiceLink(ctx context.Context, policy ServiceLinkPolicyRequest, idempotencyKey string) (json.RawMessage, error)
+}
+
+// CoreSettingsReader is the narrow Management API capability used by the
+// operator settings workflow; service deployment use cases do not depend on it.
+type CoreSettingsReader interface {
+	ReadCoreSettings(ctx context.Context) (CoreSettingsSnapshot, error)
+}
+
+// CoreSettingsWriter updates the desired Core-owned settings document with
+// Management API revision CAS. Callers must resolve only typed local refs
+// before invoking it; raw paths must never cross the Studio boundary.
+type CoreSettingsWriter interface {
+	UpdateCoreSettings(ctx context.Context, ifMatch string, document json.RawMessage) (CoreSettingsSnapshot, error)
+}
+
+// OperationReference is the safe subset returned by Core's idempotency
+// recovery lookup. It deliberately excludes request payloads and credentials.
+type OperationReference struct {
+	ID         string
+	State      string
+	ResourceID string
+	ErrorCode  string
+}
+
+// ServiceArtifactPublisher sends an explicitly selected service-owned artifact
+// action through Core Management API. The caller supplies a bounded Project
+// artifact stream and safe action metadata; implementations must not resolve or
+// call a service endpoint directly.
+type ServiceArtifactPublisher interface {
+	PublishServiceArtifact(ctx context.Context, request ServiceArtifactPublication) (json.RawMessage, error)
+}
+
+// ServiceAdminSurfaceReader exposes the bounded, Core-backed descriptor used
+// to render service-owned administration forms. Implementations must not call
+// a service endpoint directly; Core owns SDK REST access and descriptor state.
+type ServiceAdminSurfaceReader interface {
+	ReadServiceAdminSurface(ctx context.Context, serviceID string) (ServiceAdminSurface, error)
+}
+
+type ServiceAdminSurface struct {
+	Digest     string
+	Descriptor json.RawMessage
+}
+
+type ServiceArtifactPublication struct {
+	ServiceID      string
+	PageID         string
+	ActionID       string
+	Metadata       json.RawMessage
+	ContentType    string
+	Artifact       io.Reader
+	IdempotencyKey string
+	IfMatch        string
 }
 
 type CoreConnection struct {
@@ -62,8 +132,30 @@ type ApplyResponse struct {
 }
 
 type OperationResponse struct {
-	State string
-	Raw   json.RawMessage
+	ID              string
+	State           string
+	ReplicaOutcomes []OperationReplicaOutcome
+}
+
+type OperationReplicaOutcome struct {
+	ReplicaID         string `json:"replicaId"`
+	DesiredGeneration int64  `json:"desiredGeneration"`
+	State             string `json:"state"`
+	FailureCode       string `json:"failureCode,omitempty"`
+}
+
+type ApplyIntent struct {
+	Scope string   `json:"scope"`
+	Keys  []string `json:"keys"`
+}
+
+// ApplyRecoveryStore serializes local callers and persists only opaque Core
+// idempotency references, never the settings bundle or operation payload.
+type ApplyRecoveryStore interface {
+	Acquire(ctx context.Context, targetKey string) (func() error, error)
+	Load(targetKey string) (ApplyIntent, bool, error)
+	Save(targetKey string, intent ApplyIntent) error
+	Clear(targetKey string) error
 }
 
 type TargetRegistry interface {

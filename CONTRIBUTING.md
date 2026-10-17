@@ -23,3 +23,17 @@ output, typed exit behavior и тест успешного и отказного
 
 Перед изменением Core API сначала обновляется owner contract в Core, затем
 совместимый typed adapter и contract test в CLI.
+
+Терминология и границы миграции Services / Service SDK / Wool закреплены в
+[`AGENTS.md`](AGENTS.md). Регрессии проверяют отсутствие старых CLI/HTTP aliases,
+сохранение artifact trust/registrations, raw settings bytes и historical reports.
+Для локальной межрепозиторной проверки:
+
+```bash
+GOWORK=off LIAPOLDUS_CORE_OPENAPI="$PWD/../core/contracts/v1/management.openapi.yaml" \
+  go test ./internal/infrastructure/coreapi -run TestCanonicalCoreManagementContract -count=1
+```
+
+CI остаётся привязан к точным owner commits. При nomenclature migration нельзя
+заменять их floating branch: обе Core checkout references и Service SDK reference
+обновляются после публикации согласованных owner commits.

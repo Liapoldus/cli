@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
 const studioEventsFlag = "--studio-events"
+const dockerMountUnavailableCode = "docker_mount_source_unavailable"
+const serviceReplicaLeaseExpiredCode = "service_replica_lease_expired"
+
+var studioAbsolutePathPattern = regexp.MustCompile(`(^|[\s=])(/[^\s"'<>]+|[A-Za-z]:\\[^\s"'<>]+)`)
 
 type studioEvent struct {
 	SchemaVersion string          `json:"schemaVersion"`
@@ -72,13 +77,18 @@ func (writer *studioEventWriter) Flush() error {
 
 func (writer *studioEventWriter) emitLine(line string) error {
 	if writer.kind == "stderr" {
+		code, message := studioDiagnosticFields(line)
+		severity := "warning"
+		if code != "cli.stderr" {
+			severity = "error"
+		}
 		return emitStudioEvent(writer.output, studioEvent{
 			SchemaVersion: "cli-events/v1",
 			Type:          "diagnostic",
 			RunID:         writer.runID,
-			Severity:      "warning",
-			Code:          "cli.stderr",
-			Message:       safeStudioDiagnostic(line),
+			Severity:      severity,
+			Code:          code,
+			Message:       message,
 		})
 	}
 	line = string(bytes.TrimSpace([]byte(line)))
@@ -167,10 +177,26 @@ func safeStudioDiagnostic(value string) string {
 			}
 		}
 	}
+	message = studioAbsolutePathPattern.ReplaceAllString(message, "$1[redacted path]")
 	if len(message) > 512 {
 		message = message[:512] + "…"
 	}
 	return message
+}
+
+func studioDiagnosticFields(value string) (string, string) {
+	message := safeStudioDiagnostic(value)
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "service sdk replica lease expired") || strings.Contains(lower, "replica_lease_expired") {
+		return serviceReplicaLeaseExpiredCode, "Core rejected the expired service replica incarnation. Issue a new operator-signed service identity/certificate before starting this service; retrying with the same certificate cannot recover it."
+	}
+	marker := dockerMountUnavailableCode + ": "
+	if index := strings.Index(message, marker); index >= 0 &&
+		(index == 0 || strings.ContainsRune(": \t", rune(message[index-1]))) {
+		message = strings.TrimSpace(message[:index] + message[index+len(marker):])
+		return dockerMountUnavailableCode, message
+	}
+	return "cli.stderr", message
 }
 
 func emitStudioEvent(output io.Writer, event studioEvent) error {

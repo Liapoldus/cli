@@ -47,14 +47,31 @@ func (s OperationService) Get(ctx context.Context, operationID string) (domain.O
 }
 
 func (s OperationService) Watch(ctx context.Context, operationID string, interval, timeout time.Duration) (domain.OperationResponse, error) {
+	return s.WatchObserved(ctx, operationID, interval, timeout, nil)
+}
+
+// WatchObserved reports only state transitions from Core. It deliberately does
+// not expose the Core response body to observers, which keeps Studio progress
+// events on a small, reviewed allowlist.
+func (s OperationService) WatchObserved(ctx context.Context, operationID string, interval, timeout time.Duration, onState func(operationID, state string)) (domain.OperationResponse, error) {
+	if interval <= 0 || timeout <= 0 {
+		return domain.OperationResponse{}, errors.New("operation watch interval and timeout must be positive")
+	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	lastState := ""
 	for {
 		response, err := s.Get(ctx, operationID)
 		if err != nil {
 			return domain.OperationResponse{}, err
+		}
+		if response.State != lastState {
+			lastState = response.State
+			if onState != nil {
+				onState(operationID, response.State)
+			}
 		}
 		switch response.State {
 		case "succeeded", "completed":
