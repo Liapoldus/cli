@@ -23,6 +23,15 @@
 - [x] On 2026-10-18, `GOWORK=off make check` and `GOWORK=off make test-race`
   passed. The end-to-end local rotation acknowledgement and crash/restart
   acceptance still require a live Studio/Core runtime and have not been run.
+- [ ] Live host preflight on 2026-10-18 found that Studio's selected
+  /Users/docup/go/bin/liapoldus is stale: service secret list returns
+  unsupported service command. A current Darwin/arm64 CLI candidate was
+  built at /tmp/liapoldus-cli-2026-10-18, SHA-256
+  556545996aeba3c260a4f17afb91ebb44795b2e0bbe6baf9cc56ba7d2dce1a2f.
+  It reaches Core's catalog route, which returns HTTP 404 from the currently
+  running Core binary. The candidate is not installed; local secret workflow
+  remains unverified until the updated host CLI and Core are selected through
+  Studio and the full rotation path passes.
 
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
