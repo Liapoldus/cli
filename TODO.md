@@ -40,6 +40,11 @@
 - [x] On 2026-10-18, `GOWORK=off make check` and `GOWORK=off make test-race`
   passed. The end-to-end local rotation acknowledgement and crash/restart
   acceptance still require a live Studio/Core runtime and have not been run.
+- [x] A fresh CLI `Runner` after a staged rotation reconstructs the pending
+  rotation from the persisted local reference index and Core catalog without
+  creating another reference, revoking the old one, or exposing the value. This
+  covers CLI-process recovery; it does not replace the still-open live
+  Studio/Core/runtime restart acceptance.
 - [x] Added CLI regressions proving a reference still present in Project,
   mismatched settings digest, or one unready replica blocks Core revocation and
   preserves the local vault value. The successful path confirms each replica's

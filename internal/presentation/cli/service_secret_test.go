@@ -561,6 +561,25 @@ func TestServiceSecretRotateStagesNewReferenceWithoutRevokingOld(t *testing.T) {
 	if !found {
 		t.Fatalf("persisted index did not retain the staged rotation: %+v", index.Items)
 	}
+	// A fresh CLI runner represents a process restart: it must reconstruct the
+	// staged rotation from the local index and Core metadata without creating a
+	// new reference or revoking the old one.
+	restartedRunner := Runner{
+		Registry: targetRegistryStub{target: target}, Credentials: credentialProviderStub{value: "core-token"}, CredentialVault: vault,
+		CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) },
+	}
+	var resumedOutput, resumedError bytes.Buffer
+	if code := restartedRunner.RunContext(context.Background(), listArgs, &resumedOutput, &resumedError); code != application.ExitOK {
+		t.Fatalf("list after CLI restart failed: code=%d stdout=%s stderr=%s", code, resumedOutput.String(), resumedError.String())
+	}
+	for _, expected := range []string{`"pendingRotations":[`, oldReference, created.Reference, `"state":"staged"`} {
+		if !strings.Contains(resumedOutput.String(), expected) {
+			t.Fatalf("rotation was not recoverable after CLI restart; missing %q: %s", expected, resumedOutput.String())
+		}
+	}
+	if deleteRequests != 0 || strings.Contains(resumedOutput.String()+resumedError.String(), secretValue) {
+		t.Fatalf("restart recovery revoked old metadata or leaked secret: deletes=%d output=%s%s", deleteRequests, resumedOutput.String(), resumedError.String())
+	}
 	if err := removeStagedServiceSecretReference(target, oldReference); err != nil {
 		t.Fatalf("cleanup after successful old-reference revoke: %v", err)
 	}
