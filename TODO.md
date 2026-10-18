@@ -20,6 +20,11 @@
   the runtime reports Core, Echo and Server running. These reads expose no
   secret values and do not verify new create/rotate, delivery, ACK gating or
   revoke. No Project, runtime or vault state changed.
+- Targeted source lifecycle regressions re-run on 2026-10-18:
+  `GOTOOLCHAIN=go1.26.0 GOWORK=off GOFLAGS=-p=1 go test
+  ./internal/presentation/cli -run
+  'TestServiceSecret(Create|Revoke|Rotate)|TestDevApplyStagesOnlySelectedProjectSecretsAndPreservesOldValuesOnRejection|TestMaterializeServiceSecretMountUsesOnlySelectedProjectReferences'
+  -count=1` passes. This verifies source behavior, not a live secret write.
 
 ## Initial read-only local secret catalog preflight — 2026-10-18
 
