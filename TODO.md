@@ -5,20 +5,23 @@
 - `/Users/docup/go/bin/liapoldus` currently hashes to
   `c33d2114808708be062fb23877da3d48a8c803203ccd3d6be06d2be1227082ae` and
   Go build metadata identifies source commit `e297841`. Typed
-  `service secret list --target local --service server` returns a valid empty
-  `service-secret-references/v1` catalog with no pending registrations or
-  rotations. This supersedes older notes below that the Studio-selected CLI
-  lacked this command.
+  `service secret list --target local --service server` returns a valid
+  `service-secret-references/v1` catalog with one revoked metadata record, no
+  active reference and no pending registrations or rotations. This supersedes
+  older notes below that the Studio-selected CLI lacked this command or that
+  the catalog was empty.
 - Typed `service status server --target local` reports Server 1.1.11,
   digest `sha256:3f3f66e4d8b852b337d07f39276aa949ca1df5095fa411b88ca976286d4075a1`,
-  generation 92, ready and acknowledged. Readiness still reports the active
+  generation 93, ready and acknowledged. Readiness still reports the active
   settings envelope as schemaVersion 1; Project settings are v2 and have not
   been applied during this check.
-- Both CLI calls were read-only and returned no secret values. They do not
-  verify create/rotate, secret delivery, ACK gating or revoke. No Project,
-  runtime or vault state changed.
+- Rechecked with `service secret list`, `service status server`, `runtime status`,
+  and `GET /echo?text=goal-recheck` on 2026-10-18. `/echo` returned HTTP 200;
+  the runtime reports Core, Echo and Server running. These reads expose no
+  secret values and do not verify new create/rotate, delivery, ACK gating or
+  revoke. No Project, runtime or vault state changed.
 
-## Read-only local secret catalog preflight — 2026-10-18
+## Initial read-only local secret catalog preflight — 2026-10-18
 
 - Directly invoked Darwin/arm64 candidate
   `/private/tmp/liapoldus-cli-20261018-4516447`, SHA-256
