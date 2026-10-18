@@ -1,5 +1,25 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Read-only local secret catalog preflight — 2026-10-18
+
+- Directly invoked Darwin/arm64 candidate
+  `/private/tmp/liapoldus-cli-20261018-4516447`, SHA-256
+  `5e30a42a1bcf5af1d3c6ac4131fa71a109ca3c234650e31443eaf28ef9ce8829`.
+  `runtime status --target local` reports Core, Echo and Server running;
+  `service status server --target local` reports active Server 1.1.8, digest
+  `sha256:5a8e02a65624441b4654eda80103e7e91ea9406f069236f12ce2e128ae6807b2`,
+  generation 92 and ready.
+- Typed `service secret list` for both `server` and `echo` succeeds through
+  Core and returns valid empty `service-secret-references/v1` catalogs with no
+  pending registrations or rotations. This supersedes earlier live-preflight
+  notes that the catalog route returned 404; it does not identify the running
+  Core binary digest or prove secret creation, grant delivery, rotation, apply,
+  or revocation.
+- These commands were read-only. No secret value, Project configuration,
+  runtime configuration or vault entry was created or changed. This direct
+  candidate invocation does not establish which CLI path Studio currently
+  selects; packaged host acceptance remains open.
+
 ## Exact-source current macOS CLI candidate — 2026-10-18
 
 - Built Darwin/arm64 CLI from published source HEAD
