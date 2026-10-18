@@ -1,6 +1,28 @@
 # CLI — Studio configurator contract and runtime TODO
 
-## Local secret rotation smoke after trust recovery — 2026-10-18
+## Bundle admission blockers and latest local runtime read — 2026-10-18
+
+- CLI source now reads Core plan `blockedBy` codes and stops before local
+  secret staging or writing a recovery intent when an apply is already blocked.
+  Regression tests cover this refusal. `GOWORK=off GOFLAGS=-p=1
+  LIAPOLDUS_CORE_OPENAPI="/Users/docup/Projects/Liapoldus Engine/core/contracts/v1/management.openapi.yaml"
+  make check` and `make test-race` pass. The updated CLI has not yet been built,
+  installed or used for a local apply.
+- The currently installed `/Users/docup/go/bin/liapoldus` remains the approved
+  build from commit `39845869c81a83c40d215702c5642a512893d36f`, SHA-256
+  `68db41f10d7b566da8d6ff6e8f30c04d567c811811a96ab9f1d73d5800ab0bd9`.
+  Latest typed runtime status: Core running, Echo and Server exited. The
+  read-only `dev plan` succeeds at working-tree digest
+  `sha256:c0ed4230629e8d35d3c725e6db1a8d44cfaa64c733351c4d3d62ddea8f2a2bac`,
+  with current revision 95 for each service; typed service metadata reads
+  return HTTP 503 while the service containers are stopped.
+- The Project still contains only `/echo`; the temporary auth route was
+  removed. Local catalog reads show all three synthetic test references
+  revoked and no pending registrations or rotations. No successful secret
+  grant, protected request, configuration ACK, or rotation retirement was
+  observed. Production remains out of scope.
+
+## Local secret rotation smoke after trust recovery — superseded status — 2026-10-18
 
 - `/Users/docup/go/bin/liapoldus` is now the approved Darwin/arm64 build from
   CLI commit `39845869c81a83c40d215702c5642a512893d36f`, SHA-256

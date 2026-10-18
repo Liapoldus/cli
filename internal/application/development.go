@@ -210,8 +210,9 @@ func developmentIdempotencyKey(request domain.ConfigBundleRequest, bundle domain
 			Valid    bool   `json:"valid"`
 			Digest   string `json:"digest"`
 			Services []struct {
-				ID              string `json:"id"`
-				CurrentRevision int64  `json:"currentRevision"`
+				ID              string   `json:"id"`
+				CurrentRevision int64    `json:"currentRevision"`
+				BlockedBy       []string `json:"blockedBy"`
 			} `json:"services"`
 		} `json:"plan"`
 	}
@@ -225,8 +226,9 @@ func developmentIdempotencyKey(request domain.ConfigBundleRequest, bundle domain
 		return "", errors.New("Core plan service revisions do not match the requested bundle")
 	}
 	services := append([]struct {
-		ID              string `json:"id"`
-		CurrentRevision int64  `json:"currentRevision"`
+		ID              string   `json:"id"`
+		CurrentRevision int64    `json:"currentRevision"`
+		BlockedBy       []string `json:"blockedBy"`
 	}(nil), response.Plan.Services...)
 	sort.Slice(services, func(left, right int) bool { return services[left].ID < services[right].ID })
 	expectedIDs := make([]string, 0, len(request.Bundle.Services))
@@ -243,10 +245,25 @@ func developmentIdempotencyKey(request domain.ConfigBundleRequest, bundle domain
 		if service.ID == "" || service.ID != expectedIDs[index] || (index > 0 && services[index-1].ID == service.ID) {
 			return "", errors.New("Core plan service revisions do not match the requested bundle")
 		}
+		if len(service.BlockedBy) > 0 {
+			if !safeDevelopmentBlocker(service.BlockedBy[0]) {
+				return "", fmt.Errorf("Core plan reports an unknown configuration blocker for service %s", service.ID)
+			}
+			return "", fmt.Errorf("Core cannot apply service %s yet: %s", service.ID, service.BlockedBy[0])
+		}
 		identity += fmt.Sprintf("\x00%s\x00%d", service.ID, service.CurrentRevision)
 	}
 	keyDigest := sha256.Sum256([]byte(identity))
 	return "dev-apply-" + hex.EncodeToString(keyDigest[:]), nil
+}
+
+func safeDevelopmentBlocker(value string) bool {
+	switch value {
+	case "pending_configuration", "configuration_rollout_open", "traffic_rollout_incomplete", "revision_changed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s DevelopmentDeploymentService) validate(target string) error {

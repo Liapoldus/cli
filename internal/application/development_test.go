@@ -121,3 +121,16 @@ func TestDevelopmentIdempotencyKeyRejectsIncompleteCorePlan(t *testing.T) {
 		t.Fatal("incomplete Core plan unexpectedly produced an idempotency key")
 	}
 }
+
+func TestDevelopmentIdempotencyKeyRejectsCorePlanWithSubmissionBlocker(t *testing.T) {
+	request := domain.ConfigBundleRequest{
+		Project: domain.ProjectRef{ID: "demo", Revision: "working-tree:abc"},
+		Bundle:  domain.BundleRef{Digest: "sha256:bundle", Services: []domain.Service{{ID: "server"}}},
+		Target:  domain.TargetRef{Environment: "local"},
+	}
+	plan := []byte(`{"plan":{"valid":true,"digest":"sha256:bundle","services":[{"id":"server","currentRevision":7,"blockedBy":["traffic_rollout_incomplete"]}]}}`)
+	_, err := developmentIdempotencyKey(request, domain.Bundle{Digest: "sha256:bundle"}, plan)
+	if err == nil || !strings.Contains(err.Error(), "traffic_rollout_incomplete") {
+		t.Fatalf("blocked Core plan was not rejected with its safe reason: %v", err)
+	}
+}
