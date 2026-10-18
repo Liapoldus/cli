@@ -600,3 +600,25 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
   service response fields from reaching the plugin. Focused tests and full
   `make check` with the current Core OpenAPI contract pass. Race check and
   Studio/WebView integration remain pending.
+
+### Local config admission follow-up — 2026-10-19
+
+- `DevelopmentDeploymentService.Apply` now always reads Core's typed plan before
+  preparing local secrets or writing its recovery intent, even when Studio
+  supplies an idempotency key. This prevents a caller-provided key from bypassing
+  current admission blockers. A regression test proves blocked plans stop before
+  secret staging, recovery persistence, or `Core.Apply`.
+- `GOWORK=off GOFLAGS=-p=1 LIAPOLDUS_CORE_OPENAPI=<absolute Core OpenAPI>
+  make check` and `GOWORK=off GOFLAGS=-p=1 make test-race` pass.
+- In `Server Echo Studio` / `local`, the approved Core build
+  `df625da7910770c082db1364c0f9f0d149a15d487383af4a43e8aa8fb7607420` is
+  running. `dev plan` for working-tree digest
+  `c0ed4230629e8d35d3c725e6db1a8d44cfaa64c733351c4d3d62ddea8f2a2bac` is valid
+  at Echo/Server revision 95 and currently reports no `blockedBy` items. Echo
+  and Server containers remain exited; no configuration apply was attempted in
+  this diagnostic step. All three local synthetic Server test references remain
+  revoked; no test secret value is present in Project state or live routes.
+- Next: rebuild this CLI source into a fresh macOS/arm64 candidate for its exact
+  digest review, then continue the explicitly local integration test. Successful
+  protected-config apply, live service readiness, secret grant/ACK and rotation
+  acceptance are still unproven.

@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -43,6 +45,7 @@ type recoveryStoreStub struct {
 	intent  domain.ApplyIntent
 	found   bool
 	cleared bool
+	saved   int
 }
 
 func (store *recoveryStoreStub) Acquire(context.Context, string) (func() error, error) {
@@ -51,7 +54,10 @@ func (store *recoveryStoreStub) Acquire(context.Context, string) (func() error, 
 func (store *recoveryStoreStub) Load(string) (domain.ApplyIntent, bool, error) {
 	return store.intent, store.found, nil
 }
-func (store *recoveryStoreStub) Save(string, domain.ApplyIntent) error { return nil }
+func (store *recoveryStoreStub) Save(string, domain.ApplyIntent) error {
+	store.saved++
+	return nil
+}
 func (store *recoveryStoreStub) Clear(string) error {
 	store.cleared = true
 	return nil
@@ -134,3 +140,98 @@ func TestDevelopmentIdempotencyKeyRejectsCorePlanWithSubmissionBlocker(t *testin
 		t.Fatalf("blocked Core plan was not rejected with its safe reason: %v", err)
 	}
 }
+
+func TestDevelopmentApplyChecksBlockersEvenWithCallerIdempotencyKey(t *testing.T) {
+	source := developmentProjectSourceStub{}
+	files := []domain.File{{
+		Path: "services/server/settings.json", Digest: "sha256:" + strings.Repeat("a", 64), Bytes: 1,
+	}}
+	digest := domain.BundleDigest(files)
+	core := &blockedDevelopmentCoreStub{planRaw: []byte(fmt.Sprintf(
+		`{"plan":{"valid":true,"digest":%q,"services":[{"id":"server","currentRevision":95,"blockedBy":["traffic_rollout_incomplete"]}]}}`, digest,
+	))}
+	recovery := &recoveryStoreStub{}
+	secrets := &developmentSecretsStub{}
+	service := DevelopmentDeploymentService{
+		Source:            source,
+		Core:              core,
+		Snapshots:         developmentSnapshotterStub{},
+		Secrets:           secrets,
+		Recovery:          recovery,
+		RecoveryTargetKey: "local",
+	}
+	_, _, err := service.Apply(
+		context.Background(), "project", "local", nil, true, false, false, "caller-provided-key",
+	)
+	if err == nil || !strings.Contains(err.Error(), "traffic_rollout_incomplete") {
+		t.Fatalf("blocked Core plan was not surfaced: %v", err)
+	}
+	if core.planCalls != 1 || core.applyCalls != 0 {
+		t.Fatalf("blocked plan must stop before Core apply: plans=%d applies=%d", core.planCalls, core.applyCalls)
+	}
+	if secrets.prepared || recovery.saved != 0 {
+		t.Fatalf("blocked plan must not stage secrets or write recovery intent: prepared=%v saved=%d", secrets.prepared, recovery.saved)
+	}
+}
+
+type developmentProjectSourceStub struct{}
+
+func (developmentProjectSourceStub) ResolveRevision(context.Context, string, string) (string, error) {
+	return "snapshot-revision", nil
+}
+func (developmentProjectSourceStub) WorkingTreeStatus(context.Context, string) (string, error) {
+	return "clean", nil
+}
+func (developmentProjectSourceStub) RemoteOrigin(context.Context, string) (string, error) {
+	return "https://example.invalid/server-echo-studio.git", nil
+}
+func (developmentProjectSourceStub) Files(context.Context, string, string) ([]domain.File, error) {
+	return []domain.File{{Path: "services/server/settings.json", Digest: "sha256:" + strings.Repeat("a", 64), Bytes: 1}}, nil
+}
+func (developmentProjectSourceStub) RuntimeArtifacts(context.Context, string, string) ([]domain.ArtifactReference, error) {
+	return nil, nil
+}
+func (developmentProjectSourceStub) ServiceSettings(context.Context, string, string) ([]domain.Service, error) {
+	return []domain.Service{{ID: "server", Settings: json.RawMessage(`{"routes":[]}`)}}, nil
+}
+func (developmentProjectSourceStub) Links(context.Context, string, string) ([]json.RawMessage, error) {
+	return nil, nil
+}
+func (developmentProjectSourceStub) ProjectID(context.Context, string, string) (string, error) {
+	return "server-echo-studio", nil
+}
+
+type developmentSnapshotStub struct{ path string }
+
+func (snapshot developmentSnapshotStub) RootPath() string { return snapshot.path }
+func (developmentSnapshotStub) Close() error              { return nil }
+
+type developmentSnapshotterStub struct{}
+
+func (developmentSnapshotterStub) Capture(_ context.Context, projectPath string) (domain.ProjectSnapshot, error) {
+	return developmentSnapshotStub{path: projectPath}, nil
+}
+
+type blockedDevelopmentCoreStub struct {
+	domain.CoreClient
+	planRaw    []byte
+	planCalls  int
+	applyCalls int
+}
+
+func (core *blockedDevelopmentCoreStub) Plan(context.Context, domain.ConfigBundleRequest) (domain.PlanResponse, error) {
+	core.planCalls++
+	return domain.PlanResponse{Raw: core.planRaw}, nil
+}
+func (core *blockedDevelopmentCoreStub) Apply(context.Context, domain.ConfigBundleRequest, string) (domain.ApplyResponse, error) {
+	core.applyCalls++
+	return domain.ApplyResponse{}, nil
+}
+
+type developmentSecretsStub struct{ prepared bool }
+
+func (secrets *developmentSecretsStub) Prepare(context.Context, []domain.Service) error {
+	secrets.prepared = true
+	return nil
+}
+func (*developmentSecretsStub) Finalize(context.Context, []domain.Service) error { return nil }

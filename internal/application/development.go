@@ -88,20 +88,21 @@ func (s DevelopmentDeploymentService) Apply(ctx context.Context, projectPath, ta
 	if err != nil {
 		return domain.Bundle{}, DevelopmentApplyResult{}, err
 	}
+	// Always query Core's current admission state before staging local secrets or
+	// writing a recovery intent, including when the caller supplies an
+	// idempotency key. A content-only key is insufficient: after a successful
+	// apply, the same working-tree bundle is a new desired operation against
+	// newer service configuration revisions.
+	planResult, planErr := s.Core.Plan(ctx, request)
+	if planErr != nil {
+		return domain.Bundle{}, DevelopmentApplyResult{}, wrapCoreError(planErr)
+	}
+	derivedKey, err := developmentIdempotencyKey(request, bundle, planResult.Raw)
+	if err != nil {
+		return domain.Bundle{}, DevelopmentApplyResult{}, fmt.Errorf("derive development apply idempotency key: %w", err)
+	}
 	if idempotencyKey == "" {
-		// A content-only key is not sufficient: after a successful apply, the
-		// same working-tree bundle is a new desired operation against newer
-		// service configuration revisions. Include Core's current revisions so
-		// an unchanged retry is idempotent, while a later apply is not mistaken
-		// for a conflicting replay.
-		planResult, planErr := s.Core.Plan(ctx, request)
-		if planErr != nil {
-			return domain.Bundle{}, DevelopmentApplyResult{}, wrapCoreError(planErr)
-		}
-		idempotencyKey, err = developmentIdempotencyKey(request, bundle, planResult.Raw)
-		if err != nil {
-			return domain.Bundle{}, DevelopmentApplyResult{}, fmt.Errorf("derive development apply idempotency key: %w", err)
-		}
+		idempotencyKey = derivedKey
 	}
 	if retryingFailed {
 		idempotencyKey, err = freshRetryIdempotencyKey(idempotencyKey)
