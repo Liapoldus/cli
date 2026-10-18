@@ -1,5 +1,23 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## macOS local runtime retry — 2026-10-18
+
+- Studio's approved Run action was retried after starting OrbStack. `docker
+  info --format '{{.ServerVersion}} {{.Name}}'` reports `29.8.2 orbstack`, and
+  `liapoldus target inspect local` reports a configured local runtime. The
+  retry advanced past Docker startup but failed with
+  `Core start: Core Management TLS certificate is unavailable`.
+- `liapoldus runtime status --target local` reports the Core container exited.
+  The `local` target's seven typed bootstrap TLS file references are all
+  missing, so `coreContainerRequest` correctly refuses to create the Core
+  container. The CLI did not generate replacement certificates, update the
+  target profile, or alter the Project.
+- The local Project settings file still has only the `/echo` route and no
+  secret reference. No configuration candidate reached Core or Server; secret
+  rotation ACK and retirement remain unverified. Restore the existing Core
+  trust assets before resuming the authorized local flow; do not generate a
+  replacement CA as an implicit repair.
+
 ## Current local CLI and staged secret rotation — 2026-10-18
 
 - `/Users/docup/go/bin/liapoldus` hashes to
