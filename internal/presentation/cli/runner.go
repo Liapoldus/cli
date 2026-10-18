@@ -900,16 +900,16 @@ func (r Runner) credentials(ctx context.Context, options commandOptions) (domain
 }
 
 type commandOptions struct {
-	project, revision, target, output, endpoint, idempotencyKey, targets        string
-	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint string
-	service, resource, requestFile                                              string
-	page, action, artifactFile, contentType, metadataFile, ifMatch              string
-	purpose, label, reference                                                   string
-	expectedGeneration                                                          *int64
-	approvalEvidence                                                            string
-	caFile, clientCertFile, clientKeyFile, serverName                           string
-	confirm, wait, tokenStdin, secretStdin, replace, retryFailed                bool
-	projectExplicit                                                             bool
+	project, revision, target, output, endpoint, idempotencyKey, targets            string
+	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint     string
+	service, resource, requestFile                                                  string
+	page, section, action, cursor, artifactFile, contentType, metadataFile, ifMatch string
+	purpose, label, reference                                                       string
+	expectedGeneration                                                              *int64
+	approvalEvidence                                                                string
+	caFile, clientCertFile, clientKeyFile, serverName                               string
+	confirm, wait, tokenStdin, secretStdin, replace, retryFailed                    bool
+	projectExplicit                                                                 bool
 }
 
 func parseOptions(args []string) (commandOptions, error) {
@@ -1007,8 +1007,12 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.resource = value
 		case "--page":
 			options.page = value
+		case "--section":
+			options.section = value
 		case "--action":
 			options.action = value
+		case "--cursor":
+			options.cursor = value
 		case "--artifact-file":
 			options.artifactFile = value
 		case "--content-type":

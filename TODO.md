@@ -414,3 +414,17 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
 
 - `runtime start` now reconciles already-running containers without destroying them, re-registers their current SDK lease, and retains created containers/logs when registration fails. Focused tests, `make check`, and `make test-race` pass; the installed CLI remains the user-approved SHA-256 `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`.
 - The local `Server Echo Studio` target has already recovered through typed CLI and both services reported running; repeated Run accepted Core registration. Final smoke with updated Core/Server/Echo binaries remains pending their exact digest gate. Source commit/push pending.
+
+### Generic Admin Surface tables and actions — 2026-10-18
+
+- Added typed `service admin query` and `service admin invoke` commands. Every
+  query/action re-reads the live descriptor, checks its exact SHA-256 binding,
+  validates the declared table/action and bounds the request/response. Queries
+  return only descriptor-allowlisted scalar columns; actions read input from a
+  Project-scoped JSON file, require explicit confirmation and return only a
+  completion marker to Studio.
+- Regression tests cover live digest binding, pagination, declared action input,
+  CAS, idempotency, malformed/trailing JSON, column filtering and preventing
+  service response fields from reaching the plugin. Focused tests and full
+  `make check` with the current Core OpenAPI contract pass. Race check and
+  Studio/WebView integration remain pending.

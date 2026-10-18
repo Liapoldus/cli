@@ -2,6 +2,8 @@ package coreapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -132,23 +134,26 @@ func TestUpdateCoreSettingsRejectsInvalidDocumentBeforeRequest(t *testing.T) {
 }
 
 func TestServiceAdminQueryUsesOnlyCoreManagementAPIAndLiveSurfaceDigest(t *testing.T) {
+	descriptor := `{"service":"server","version":1,"pages":[{"id":"sites","sections":[{"id":"sites","kind":"table","dataCapability":"server.sites.list","queryResource":"sites","columns":["siteId"],"actions":[]}]}]}`
+	digestBytes := sha256.Sum256([]byte(descriptor))
+	digest := "sha256:" + hex.EncodeToString(digestBytes[:])
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		calls++
 		if request.Header.Get("Authorization") != "Bearer secret" {
 			t.Errorf("missing Core authorization")
 		}
-		if calls == 1 {
+		if calls <= 2 {
 			if request.Method != http.MethodGet || request.URL.Path != "/api/services/admin-surfaces" {
 				t.Fatalf("unexpected surface request: %s %s", request.Method, request.URL.Path)
 			}
-			_, _ = response.Write([]byte(`{"items":[{"instanceId":"server","descriptor":{"version":1},"sha256":"` + strings.Repeat("a", 64) + `"}]}`))
+			_, _ = response.Write([]byte(`{"items":[{"instanceId":"server","descriptor":` + descriptor + `,"sha256":"` + digest + `"}]}`))
 			return
 		}
 		if request.Method != http.MethodPost || request.URL.Path != "/api/services/server/admin/pages/sites/query" {
 			t.Fatalf("unexpected admin query: %s %s", request.Method, request.URL.Path)
 		}
-		if request.Header.Get("X-Liapoldus-Admin-Surface-Digest") != strings.Repeat("a", 64) || request.Header.Get("Content-Type") != "application/json" {
+		if request.Header.Get("X-Liapoldus-Admin-Surface-Digest") != digest || request.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("missing safe surface binding headers: %v", request.Header)
 		}
 		var body map[string]any
@@ -163,7 +168,7 @@ func TestServiceAdminQueryUsesOnlyCoreManagementAPIAndLiveSurfaceDigest(t *testi
 		t.Fatal(err)
 	}
 	body, err := client.ServiceAdminQuery(context.Background(), "server", "sites", "sites")
-	if err != nil || calls != 2 || string(body) != `{"items":[{"siteId":"docs"}]}` {
+	if err != nil || calls != 3 || string(body) != `{"items":[{"siteId":"docs"}]}` {
 		t.Fatalf("calls=%d body=%s error=%v", calls, body, err)
 	}
 }
@@ -193,8 +198,9 @@ func TestServiceAdminQueryRejectsMissingOrAmbiguousCoreSurface(t *testing.T) {
 }
 
 func TestReadServiceAdminSurfaceReturnsOnlyCoreBackedDescriptorAndDigest(t *testing.T) {
-	digest := "sha256:" + strings.Repeat("a", 64)
 	descriptor := `{"version":1,"pages":[{"id":"sites","actions":[{"id":"publish"}]}]}`
+	digestBytes := sha256.Sum256([]byte(descriptor))
+	digest := "sha256:" + hex.EncodeToString(digestBytes[:])
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		calls++
@@ -232,6 +238,103 @@ func TestReadServiceAdminSurfaceRejectsUnboundedOrInvalidDescriptors(t *testing.
 				t.Fatal("invalid or oversized descriptor accepted")
 			}
 		})
+	}
+}
+
+func TestQueryServiceAdminSectionBindsDeclaredTableAndCursorToLiveDigest(t *testing.T) {
+	descriptor := `{"service":"server","version":1,"pages":[{"id":"sites","sections":[{"id":"sites","kind":"table","dataCapability":"server.sites.list","queryResource":"sites","columns":["siteId"],"actions":[]}]}]}`
+	digestBytes := sha256.Sum256([]byte(descriptor))
+	digest := "sha256:" + hex.EncodeToString(digestBytes[:])
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		calls++
+		if request.Method == http.MethodGet {
+			_, _ = io.WriteString(response, `{"items":[{"instanceId":"server","sha256":"`+digest+`","descriptor":`+descriptor+`}]}`)
+			return
+		}
+		if request.Method != http.MethodPost || request.URL.Path != "/api/services/server/admin/pages/sites/query" ||
+			request.Header.Get("X-Liapoldus-Admin-Surface-Digest") != digest {
+			t.Fatalf("unexpected typed query: %s %s headers=%v", request.Method, request.URL.Path, request.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["resource"] != "sites" || body["cursor"] != "cursor-2" || body["limit"] != float64(50) {
+			t.Fatalf("unexpected query body: %v err=%v", body, err)
+		}
+		_, _ = io.WriteString(response, `{"items":[]}`)
+	}))
+	defer server.Close()
+	client, err := New(domain.CoreConnection{Endpoint: server.URL, Token: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.QueryServiceAdminSection(context.Background(), domain.ServiceAdminSectionQuery{
+		ServiceID: "server", PageID: "sites", SectionID: "sites", ResourceID: "sites", Cursor: "cursor-2", SurfaceDigest: digest,
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestInvokeServiceAdminActionUsesDeclaredInputCASAndLiveDigest(t *testing.T) {
+	descriptor := `{"service":"server","version":1,"pages":[{"id":"sites","sections":[{"id":"sites","kind":"table","dataCapability":"server.sites.list","queryResource":"sites","columns":["siteId"],"actions":[{"id":"rollback","ifMatchField":"expectedRevision","inputSchema":{"type":"object","properties":{"siteId":{"type":"string","minLength":1,"maxLength":64},"expectedRevision":{"type":"string","minLength":1,"maxLength":64},"targetRevision":{"type":"string","minLength":1,"maxLength":64}},"required":["siteId","expectedRevision","targetRevision"],"additionalProperties":false}}]}]}]}`
+	digestBytes := sha256.Sum256([]byte(descriptor))
+	digest := "sha256:" + hex.EncodeToString(digestBytes[:])
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		calls++
+		if request.Method == http.MethodGet {
+			_, _ = io.WriteString(response, `{"items":[{"instanceId":"server","sha256":"`+digest+`","descriptor":`+descriptor+`}]}`)
+			return
+		}
+		if request.Method != http.MethodPost || request.URL.Path != "/api/services/server/admin/pages/sites/actions/rollback" ||
+			request.Header.Get("X-Liapoldus-Admin-Surface-Digest") != digest || request.Header.Get("If-Match") != `"r-2"` ||
+			request.Header.Get("Idempotency-Key") != "rollback-1" {
+			t.Fatalf("unexpected action request: %s %s headers=%v", request.Method, request.URL.Path, request.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["expectedRevision"] != `"r-2"` || body["targetRevision"] != "r-1" {
+			t.Fatalf("unexpected action body: %v err=%v", body, err)
+		}
+		_, _ = io.WriteString(response, `{"completed":true}`)
+	}))
+	defer server.Close()
+	client, err := New(domain.CoreConnection{Endpoint: server.URL, Token: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.InvokeServiceAdminAction(context.Background(), domain.ServiceAdminActionInvocation{
+		ServiceID: "server", PageID: "sites", SectionID: "sites", ActionID: "rollback", SurfaceDigest: digest,
+		Input:   json.RawMessage(`{"siteId":"docs","expectedRevision":"\"r-2\"","targetRevision":"r-1"}`),
+		IfMatch: `"r-2"`, IdempotencyKey: "rollback-1",
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestInvokeServiceAdminActionRejectsChangedSurfaceBeforeDispatch(t *testing.T) {
+	descriptor := `{"service":"server","version":1,"pages":[{"id":"sites","sections":[{"id":"sites","kind":"table","dataCapability":"server.sites.list","queryResource":"sites","columns":["siteId"],"actions":[]}]}]}`
+	digestBytes := sha256.Sum256([]byte(descriptor))
+	digest := "sha256:" + hex.EncodeToString(digestBytes[:])
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		calls++
+		if request.Method != http.MethodGet {
+			t.Fatalf("changed surface must block action dispatch: %s %s", request.Method, request.URL.Path)
+		}
+		_, _ = io.WriteString(response, `{"items":[{"instanceId":"server","sha256":"`+digest+`","descriptor":`+descriptor+`}]}`)
+	}))
+	defer server.Close()
+	client, err := New(domain.CoreConnection{Endpoint: server.URL, Token: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.InvokeServiceAdminAction(context.Background(), domain.ServiceAdminActionInvocation{
+		ServiceID: "server", PageID: "sites", SectionID: "sites", ActionID: "rollback", SurfaceDigest: "sha256:" + strings.Repeat("a", 64),
+		Input: json.RawMessage(`{"siteId":"docs"}`), IfMatch: `"r-2"`, IdempotencyKey: "rollback-1",
+	})
+	if err == nil || calls != 1 {
+		t.Fatalf("calls=%d err=%v; expected descriptor mismatch before action", calls, err)
 	}
 }
 

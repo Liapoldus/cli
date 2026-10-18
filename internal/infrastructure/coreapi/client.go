@@ -3,6 +3,7 @@ package coreapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -344,68 +345,28 @@ func (c Client) ServiceAdminQuery(ctx context.Context, serviceID, pageID, resour
 	if !validManagementID(serviceID) || !validManagementID(pageID) || !validManagementID(resourceID) {
 		return nil, errors.New("service, page and resource identifiers are required")
 	}
-	if strings.TrimSpace(c.Token) == "" {
-		return nil, errors.New("core token is required")
-	}
-	listRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/services/admin-surfaces"), nil)
+	surface, err := c.ReadServiceAdminSurface(ctx, serviceID)
 	if err != nil {
 		return nil, err
 	}
-	listRequest.Header.Set("Accept", "application/json")
-	listRequest.Header.Set("Authorization", "Bearer "+c.Token)
-	listBody, status, err := c.do(listRequest)
-	if err != nil {
-		return nil, err
+	descriptor, err := decodeAdminSurface(surface.Descriptor)
+	if err != nil || descriptor.Service != serviceID {
+		return nil, domain.CoreContractError{Operation: "service resource query", Message: "invalid live surface"}
 	}
-	if status < 200 || status >= 300 {
-		return nil, domain.NewCoreHTTPError("service resource catalog", status, listBody)
-	}
-	var surfaces struct {
-		Items []struct {
-			InstanceID string `json:"instanceId"`
-			SHA256     string `json:"sha256"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(listBody, &surfaces); err != nil || len(surfaces.Items) > 4096 {
-		return nil, domain.CoreContractError{Operation: "service resource catalog", Message: "invalid surface list"}
-	}
-	digest := ""
-	for _, surface := range surfaces.Items {
-		if surface.InstanceID != serviceID {
+	for _, page := range descriptor.Pages {
+		if page.ID != pageID {
 			continue
 		}
-		if digest != "" || !validSHA256Hex(surface.SHA256) {
-			return nil, domain.CoreContractError{Operation: "service resource catalog", Message: "missing or ambiguous service surface"}
+		for _, section := range page.Sections {
+			if section.Kind == "table" && section.QueryResource == resourceID {
+				return c.QueryServiceAdminSection(ctx, domain.ServiceAdminSectionQuery{
+					ServiceID: serviceID, PageID: pageID, SectionID: section.ID, ResourceID: resourceID,
+					SurfaceDigest: surface.Digest,
+				})
+			}
 		}
-		digest = surface.SHA256
 	}
-	if digest == "" {
-		return nil, domain.CoreContractError{Operation: "service resource catalog", Message: "service surface is unavailable"}
-	}
-	body, err := json.Marshal(map[string]any{"resource": resourceID, "limit": 50})
-	if err != nil {
-		return nil, err
-	}
-	path := "/api/services/" + url.PathEscape(serviceID) + "/admin/pages/" + url.PathEscape(pageID) + "/query"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(path), bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.Token)
-	request.Header.Set("X-Liapoldus-Admin-Surface-Digest", digest)
-	responseBody, status, err := c.do(request)
-	if err != nil {
-		return nil, err
-	}
-	if status < 200 || status >= 300 {
-		return nil, domain.NewCoreHTTPError("service resource query", status, responseBody)
-	}
-	if !json.Valid(responseBody) || len(responseBody) > 1_048_576 {
-		return nil, domain.CoreContractError{Operation: "service resource query", Message: "invalid or oversized JSON"}
-	}
-	return json.RawMessage(responseBody), nil
+	return nil, domain.CoreContractError{Operation: "service resource query", Message: "resource is not declared by the live surface"}
 }
 
 // PublishServiceArtifact sends a bounded artifact action through Core's
@@ -529,6 +490,10 @@ func (c Client) ReadServiceAdminSurface(ctx context.Context, serviceID string) (
 	// "sha256:". Normalize at this boundary so the CLI JSON contract never
 	// emits sha256:sha256:<hex> (which Studio correctly rejects).
 	digest := strings.TrimPrefix(surface.SHA256, "sha256:")
+	actualDigest := sha256.Sum256(surface.Descriptor)
+	if hex.EncodeToString(actualDigest[:]) != digest {
+		return domain.ServiceAdminSurface{}, domain.CoreContractError{Operation: "service admin surface", Message: "descriptor digest does not match"}
+	}
 	return domain.ServiceAdminSurface{Digest: "sha256:" + digest, Descriptor: append(json.RawMessage(nil), surface.Descriptor...)}, nil
 }
 

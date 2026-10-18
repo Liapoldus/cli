@@ -102,6 +102,39 @@ type ServiceAdminSurface struct {
 	Descriptor json.RawMessage
 }
 
+// ServiceAdminQueryPager reads one descriptor-declared Admin Surface table
+// through Core. The caller must pass the digest it inspected so a concurrent
+// descriptor change is rejected before the query is forwarded.
+type ServiceAdminQueryPager interface {
+	QueryServiceAdminSection(ctx context.Context, request ServiceAdminSectionQuery) (json.RawMessage, error)
+}
+
+type ServiceAdminSectionQuery struct {
+	ServiceID     string
+	PageID        string
+	SectionID     string
+	ResourceID    string
+	Cursor        string
+	SurfaceDigest string
+}
+
+// ServiceAdminActionInvoker executes a live descriptor-declared action through
+// Core; it never resolves or contacts a service endpoint directly.
+type ServiceAdminActionInvoker interface {
+	InvokeServiceAdminAction(ctx context.Context, request ServiceAdminActionInvocation) (json.RawMessage, error)
+}
+
+type ServiceAdminActionInvocation struct {
+	ServiceID      string
+	PageID         string
+	SectionID      string
+	ActionID       string
+	Input          json.RawMessage
+	IfMatch        string
+	IdempotencyKey string
+	SurfaceDigest  string
+}
+
 type ServiceArtifactPublication struct {
 	ServiceID      string
 	PageID         string

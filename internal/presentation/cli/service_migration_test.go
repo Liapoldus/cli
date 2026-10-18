@@ -19,7 +19,7 @@ func TestServiceCommandsReplaceRuntimePluginCommands(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	if code := (Runner{}).Run([]string{"service"}, &stdout, &stderr); code != application.ExitArguments || stderr.String() != "service secret|artifact|inspect|manifest|schema|status|admin-surface|resource is required\n" {
+	if code := (Runner{}).Run([]string{"service"}, &stdout, &stderr); code != application.ExitArguments || stderr.String() != "service secret|admin|artifact|inspect|manifest|schema|status|admin-surface|resource is required\n" {
 		t.Fatalf("service command: code=%d stderr=%q", code, stderr.String())
 	}
 }
