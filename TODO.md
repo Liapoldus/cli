@@ -22,9 +22,12 @@
   Core HTTP 409 `bundle_apply_failed: service configuration revision conflict`.
   A fresh `service status server` still reports generation 96, the current
   Server digest and no pending generation; this attempt did not create a
-  recoverable Core operation. The candidate remains saved in Project and must
-  not be reported as active. The newer Core candidate is required to continue
-  diagnosis without inspecting Core's private database.
+  recoverable Core operation. Filtering Server logs to safe outcome tokens
+  found the latest `grantDenied` event at `2026-10-18T23:17:52.423698534Z`,
+  consistent with the apply attempt. The candidate remains saved in Project
+  and must not be reported as active. No raw log line or secret value was
+  emitted. Candidate-generation-scoped Core and Server builds are needed to
+  repeat the grant flow.
 - Latest source is published: SDK `1f68ac6`, Core `aecc186`, Server
   `80ffb23` (1.1.14), and CLI-owned checkpoint follows below. The Linux/arm64
   Core candidate digest is
