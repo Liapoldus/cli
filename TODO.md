@@ -18,6 +18,13 @@
   returns 404. Typed `service secret list` shows two active and three revoked
   synthetic references, with no pending registration or rotation. Values
   remain in the local vault and were not read or logged.
+- Repeated `dev apply --confirm` for this authorized local candidate returned
+  Core HTTP 409 `bundle_apply_failed: service configuration revision conflict`.
+  A fresh `service status server` still reports generation 96, the current
+  Server digest and no pending generation; this attempt did not create a
+  recoverable Core operation. The candidate remains saved in Project and must
+  not be reported as active. The newer Core candidate is required to continue
+  diagnosis without inspecting Core's private database.
 - Latest source is published: SDK `1f68ac6`, Core `aecc186`, Server
   `80ffb23` (1.1.14), and CLI-owned checkpoint follows below. The Linux/arm64
   Core candidate digest is
