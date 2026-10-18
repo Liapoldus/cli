@@ -1,5 +1,20 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Exact-source current macOS CLI candidate — 2026-10-18
+
+- Built Darwin/arm64 CLI from published source HEAD
+  `4516447e8b5fd964d631729de50f24da95b75233` to
+  `/tmp/liapoldus-cli-20261018-4516447`, SHA-256
+  `5e30a42a1bcf5af1d3c6ac4131fa71a109ca3c234650e31443eaf28ef9ce8829`.
+  `file` confirms Mach-O arm64; `go version -m` records the exact revision and
+  `vcs.modified=false`.
+- On this HEAD, `GOWORK=off make check` and `GOWORK=off make test-race` pass.
+- Studio still selects `/Users/docup/go/bin/liapoldus` at SHA-256
+  `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`, which
+  does not support service-secret commands. The candidate has not been selected
+  or installed; exact-digest Studio confirmation and live local acceptance are
+  open. No Project, Core, runtime or secret state changed during preparation.
+
 ## Exact-source macOS candidate for current Studio workflow — 2026-10-18
 
 - Built the Darwin/arm64 CLI from published source HEAD `11b9a21a34ba42ad3324e1a8418152ee587937c6` to `/tmp/liapoldus-cli-current` with `GOTOOLCHAIN=go1.26.0 GOWORK=off GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/liapoldus-cli-current ./cmd/liapoldus`.
