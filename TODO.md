@@ -6,21 +6,34 @@
   build from commit `d0191b8`, SHA-256
   `1381dd4239795af2b64f9a1878d623eaa0de5c162d2d9895d32f018e010f00dd`; the
   previous binary is backed up under
-  `/tmp/liapoldus-local-cli-backup-20261019-admission`. Its current typed
-  `runtime status` reports Core, Echo and Server running; Server and Echo are
-  ready at generation 96. `dev plan` is valid at digest
-  `sha256:c0ed4230629e8d35d3c725e6db1a8d44cfaa64c733351c4d3d62ddea8f2a2bac`.
-- The Project contains only `/echo`, with no auth reference. Typed
-  `service secret list` returns three revoked synthetic records and no active
-  records, pending registrations, or rotations. Although the user reported
-  saving a test credential, the current Studio form is empty and no new Core
-  reference is visible; creation remains unconfirmed. No secret value or
-  authenticated request has reached Server.
+  `/tmp/liapoldus-local-cli-backup-20261019-admission`. Fresh typed `runtime
+  status` reports Core, Echo and Server containers running, and `dev plan` is
+  valid at working-tree digest
+  `sha256:9c1d1ade4026d0ee87827c518d863f37e0ea829fd4638a7eb0ff964d565bffa8`.
+  Core reports Echo/Server at generation 96; Server 1.1.12 is still the running
+  trusted artifact.
+- The Project contains `/echo` and the temporary
+  `/__codex_auth_smoke_20261019` candidate route with one opaque auth reference.
+  Runtime has not applied it: `/echo` returns HTTP 200 and the temporary path
+  returns 404. Typed `service secret list` shows two active and three revoked
+  synthetic references, with no pending registration or rotation. Values
+  remain in the local vault and were not read or logged.
+- Latest source is published: SDK `1f68ac6`, Core `aecc186`, Server
+  `80ffb23` (1.1.14), and CLI-owned checkpoint follows below. The Linux/arm64
+  Core candidate digest is
+  `5b8ae79f3ef1098861424ee9d6587d2194b4deeceba6a6ae1d993741fff56391`; Server
+  1.1.14 candidate digest is
+  `be991dab5b250461963ef46ad713fdbb3b1f2322915376c0ec0519623998a74e`.
+  Neither has been installed. Read-only artifact inventory confirms Server
+  1.1.14 is not registered yet; the 1.1.12 rollback artifact remains trusted.
+  The exact-digest local action gate is still required before registration,
+  trust, pin change, or restart.
 - Re-ran the CLI owner gates: `make check` with `GOWORK=off GOFLAGS=-p=1` and
   `LIAPOLDUS_CORE_OPENAPI` set to the current Core OpenAPI path, plus
   `make test-race` with `GOWORK=off GOFLAGS=-p=1`; both pass. The remaining
-  local smoke starts after an active reference appears in the typed catalog;
-  preserve `/echo` and production remains out of scope.
+  live candidate validation, authenticated request, rotation ACK and cleanup
+  remain after the binaries pass the action gate. Preserve `/echo`; production
+  is out of scope.
 
 ## Bundle admission blockers and latest local runtime read — superseded — 2026-10-18
 
