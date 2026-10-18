@@ -1,5 +1,12 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Exact-source macOS candidate for current Studio workflow — 2026-10-18
+
+- Built the Darwin/arm64 CLI from published source HEAD `11b9a21a34ba42ad3324e1a8418152ee587937c6` to `/tmp/liapoldus-cli-current` with `GOTOOLCHAIN=go1.26.0 GOWORK=off GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/liapoldus-cli-current ./cmd/liapoldus`.
+- SHA-256: `b686f50ce14f1868f7272627aaaef507e546b15e6d862a0471b790ca794f8d63`. `file` reports Mach-O arm64; `go version -m` records the exact revision and `vcs.modified=false`.
+- Current source gates `GOWORK=off make check` with the Core OpenAPI contract and `GOWORK=off make test-race` passed after the Admin Surface digest fence was added. The local Docker read-only inventory shows Core, Echo and Server containers running; the candidate has not been selected or run, and no Project, runtime or secret state was changed during this build.
+- Exact-digest selection and the local secret create/list/rotate/apply/ACK/revoke flow still require the normal Studio host trust and live acceptance.
+
 ## Current local CLI candidate and owner checks — 2026-10-18
 
 - `GOWORK=off make check` and `GOWORK=off make test-race` both pass on the
