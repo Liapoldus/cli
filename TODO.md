@@ -2,14 +2,16 @@
 
 ## Current local CLI candidate and owner checks — 2026-10-18
 
-- Current published source HEAD is `978c054`. `GOWORK=off make check` and
-  `GOWORK=off make test-race` both pass on that source.
+- `GOWORK=off make check` and `GOWORK=off make test-race` both pass on the
+  current CLI source code, built from commit `978c054`.
 - The current Darwin/arm64 CLI candidate was built from the exact HEAD at
   `/tmp/liapoldus-cli-2026-10-18-978c054`, SHA-256
   `9ad8c230253ffc16fa628c3c6f3e135a55ac45467c561fe097a40b360832c8f5`.
   `file` confirms Mach-O arm64 and `go version -m` records revision
   `978c05495de819430b0ec41f4faa7eb47cdbd3c0`, `vcs.modified=false`. It has not
   been selected, installed or run; exact-digest Studio trust is pending.
+- Current HEAD `f6f6389` adds only this TODO checkpoint; the candidate contains
+  the same CLI source code and records its build revision in Go metadata.
 - Studio still selects `/Users/docup/go/bin/liapoldus` at SHA-256
   `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`, which
   reports `unsupported service command` for the secret catalog operation. The
