@@ -49,6 +49,13 @@
   mismatched settings digest, or one unready replica blocks Core revocation and
   preserves the local vault value. The successful path confirms each replica's
   exact settings digest, generation, and readiness before it calls Core.
+- [x] Live preflight recheck on 2026-10-18: the `local` target is configured;
+  Core, Echo, and Server containers are running. The selected
+  `/Users/docup/go/bin/liapoldus` is still the old Darwin/arm64 build with
+  SHA-256 `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`.
+  `service secret list --target local --service server` returns
+  `unsupported service command`. These read-only checks changed no Project,
+  Core, runtime, or secret state.
 - [ ] Live host preflight on 2026-10-18 found that Studio's selected
   /Users/docup/go/bin/liapoldus is stale: service secret list returns
   unsupported service command. The updated Darwin/arm64 candidate includes
@@ -60,15 +67,20 @@
   workflow remains unverified until Studio selects this binary, Core exposes
   the route, and the full rotation path passes.
 
-- [ ] Follow-up after the retry-hardening commit: latest published CLI source
-  is `7e7d607` and its Darwin/arm64 candidate is
-  `/tmp/liapoldus-cli-2026-10-18-7e7d607`, SHA-256
-  `606df83422fce3d0b2adbc438e6a57e0424cc39ffc3a4420c43a20179bd78f2a`.
-  This supersedes the `f60ce65` candidate above; it is still not selected or
-  installed. Latest Core source is `d7f82cd`, with an uninstalled Linux/arm64
-  candidate recorded in Core TODO. Live secret catalog and rotation acceptance
-  remain pending exact-digest updates through Studio and user-confirmed plugin
-  trust review.
+- [ ] Rebuilt from current published HEAD `807ab1c` after confirming that its
+  only code change since `7e7d607` is the CLI-process rotation recovery test.
+  Darwin/arm64 candidate:
+  `/tmp/liapoldus-cli-2026-10-18-807ab1c`, SHA-256
+  `e2097e38a0e86c9749091588f8d0b0341a0c6fc84f5996382b5ad7cc5d9b1bff`.
+  `file` confirms Mach-O arm64; `go version -m` confirms revision
+  `807ab1c3fe8751ce4aa07757ce979be04725ac72`, `vcs.modified=false`.
+  It has not been selected, installed, or run; its exact digest needs Studio
+  trust before replacing the selected CLI. The previous `.606df…` candidate
+  is absent from `/tmp` and superseded by this rebuild.
+- [ ] Current Core source HEAD is `e35e66e`; the previously documented Linux
+  candidate was built from `d7f82cd` and its temporary file is no longer
+  present. The live Core container still lacks the secret catalog endpoint,
+  so Core update and the full secret workflow remain unverified.
 
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
