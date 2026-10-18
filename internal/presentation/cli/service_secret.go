@@ -185,13 +185,6 @@ func (r Runner) registerStagedServiceSecret(ctx context.Context, target domain.T
 		return fail(stderr, application.ExitTarget, "staged local secret is unavailable; its reference metadata was preserved")
 	}
 	defer clear([]byte(value))
-	secretRoot, err := serviceSecretRoot(target)
-	if err != nil {
-		return fail(stderr, application.ExitTarget, "local secret runtime mount is unavailable; staged value was preserved")
-	}
-	if err := stageServiceSecret(secretRoot, staged.Reference, []byte(value)); err != nil {
-		return fail(stderr, application.ExitTarget, "local secret runtime mount is unavailable; staged value was preserved")
-	}
 	created, err := client.CreateServiceSecretReference(ctx, options.service, domain.ServiceSecretReference{
 		Reference: staged.Reference, ServiceID: staged.ServiceID, Purpose: staged.Purpose, Label: staged.Label, State: "active",
 	})
@@ -277,19 +270,11 @@ func (r Runner) createServiceSecretValue(ctx context.Context, target domain.Targ
 	if err := vault.Store(ctx, credentialReference, string(value)); err != nil {
 		return domain.ServiceSecretReference{}, domain.ErrCredentialStore
 	}
-	secretRoot, err := serviceSecretRoot(target)
-	if err != nil {
-		_ = vault.Delete(ctx, credentialReference)
-		return domain.ServiceSecretReference{}, errors.New("local secret runtime mount is unavailable")
-	}
 	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{
 		Reference: reference, ServiceID: options.service, Purpose: options.purpose, Label: options.label, RotationFrom: rotationFrom,
 	}); err != nil {
 		_ = vault.Delete(ctx, credentialReference)
 		return domain.ServiceSecretReference{}, errors.New("local secret reference index is unavailable")
-	}
-	if err := stageServiceSecret(secretRoot, reference, value); err != nil {
-		return domain.ServiceSecretReference{}, errors.New("local secret runtime mount is unavailable; reference and value remain staged for retry")
 	}
 	created, err := client.CreateServiceSecretReference(ctx, options.service, domain.ServiceSecretReference{
 		Reference: reference, ServiceID: options.service, Purpose: options.purpose, Label: options.label, State: "active",
@@ -716,28 +701,41 @@ func removeStagedServiceSecretReference(target domain.Target, reference string) 
 	return writeStagedServiceSecretIndex(target, index)
 }
 
-func (r Runner) materializeServiceSecretMount(ctx context.Context, target domain.Target, reset bool) error {
+func (r Runner) materializeServiceSecretMount(ctx context.Context, target domain.Target, reset bool, services []domain.Service) error {
+	references, err := projectServiceSecretReferences(services)
+	if err != nil {
+		return err
+	}
 	root, err := serviceSecretRoot(target)
 	if err != nil {
 		return errors.New("local secret runtime mount is unavailable")
-	}
-	if reset {
-		if err := clearServiceSecretMount(root); err != nil {
-			return errors.New("local secret runtime mount could not be refreshed")
-		}
 	}
 	index, err := readStagedServiceSecretIndex(target)
 	if err != nil {
 		return err
 	}
-	if len(index.Items) == 0 {
+	if len(references) == 0 {
+		if reset && len(index.Items) > 0 {
+			if err := clearServiceSecretMount(root); err != nil {
+				return errors.New("local secret runtime mount could not be refreshed")
+			}
+		}
 		return nil
+	}
+	itemsByReference := make(map[string]stagedServiceSecretReference, len(index.Items))
+	for _, item := range index.Items {
+		itemsByReference[item.Reference] = item
 	}
 	vault := r.credentialVault()
 	if vault == nil {
 		return domain.ErrCredentialStore
 	}
-	for _, item := range index.Items {
+	keep := make(map[string]struct{}, len(references))
+	for _, selected := range references {
+		item, found := itemsByReference[selected.Reference]
+		if !found || item.ServiceID != selected.ServiceID {
+			return errors.New("the selected Project references a secret unavailable for that service")
+		}
 		value, err := vault.Resolve(ctx, domain.ServiceSecretCredentialReference(target.Name, item.ServiceID, item.Reference))
 		if err != nil || value == "" || len(value) > serviceSecretMaximumBytes {
 			return errors.New("a local service secret is unavailable in the operating-system vault")
@@ -763,8 +761,114 @@ func (r Runner) materializeServiceSecretMount(ctx context.Context, target domain
 			return errors.New("local service secret runtime mount could not be refreshed")
 		}
 		clear(secret)
+		keep[item.Reference] = struct{}{}
+	}
+	if reset {
+		if err := pruneServiceSecretMount(root, keep); err != nil {
+			return errors.New("local secret runtime mount could not be pruned safely")
+		}
 	}
 	return nil
+}
+
+func pruneServiceSecretMount(root string, keep map[string]struct{}) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if _, needed := keep[entry.Name()]; needed {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if !validServiceSecretReference(entry.Name()) || infoErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("local secret runtime mount contains an unsafe entry")
+		}
+		if err := os.Remove(filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type developmentServiceSecretRuntime struct {
+	runner Runner
+	target domain.Target
+}
+
+func (runtime developmentServiceSecretRuntime) Prepare(ctx context.Context, services []domain.Service) error {
+	references, err := projectServiceSecretReferences(services)
+	if err != nil {
+		return err
+	}
+	if runtime.target.Name == "" {
+		if len(references) == 0 {
+			return nil
+		}
+		return domain.ErrTargetNotConfigured
+	}
+	return runtime.runner.materializeServiceSecretMount(ctx, runtime.target, false, services)
+}
+
+func (runtime developmentServiceSecretRuntime) Finalize(ctx context.Context, services []domain.Service) error {
+	references, err := projectServiceSecretReferences(services)
+	if err != nil {
+		return err
+	}
+	if runtime.target.Name == "" {
+		if len(references) == 0 {
+			return nil
+		}
+		return domain.ErrTargetNotConfigured
+	}
+	return runtime.runner.materializeServiceSecretMount(ctx, runtime.target, true, services)
+}
+
+func projectServiceSecretReferences(services []domain.Service) ([]stagedServiceSecretReference, error) {
+	byReference := make(map[string]stagedServiceSecretReference)
+	for _, service := range services {
+		if service.ID == "" || len(service.Settings) == 0 {
+			continue
+		}
+		var settings any
+		if err := json.Unmarshal(service.Settings, &settings); err != nil {
+			return nil, errors.New("Project service settings could not be inspected for secret references")
+		}
+		values := make([]string, 0)
+		collectProjectSecretReferences(settings, &values)
+		for _, reference := range values {
+			if !validServiceSecretReference(reference) {
+				return nil, errors.New("Project contains an invalid opaque service-secret reference")
+			}
+			if previous, found := byReference[reference]; found && previous.ServiceID != service.ID {
+				return nil, errors.New("Project assigns one service-secret reference to multiple services")
+			}
+			byReference[reference] = stagedServiceSecretReference{Reference: reference, ServiceID: service.ID}
+		}
+	}
+	references := make([]stagedServiceSecretReference, 0, len(byReference))
+	for _, reference := range byReference {
+		references = append(references, reference)
+	}
+	sort.Slice(references, func(i, j int) bool { return references[i].Reference < references[j].Reference })
+	return references, nil
+}
+
+func collectProjectSecretReferences(value any, references *[]string) {
+	switch typed := value.(type) {
+	case string:
+		if strings.HasPrefix(typed, "ssr:v1:") {
+			*references = append(*references, typed)
+		}
+	case []any:
+		for _, item := range typed {
+			collectProjectSecretReferences(item, references)
+		}
+	case map[string]any:
+		for _, item := range typed {
+			collectProjectSecretReferences(item, references)
+		}
+	}
 }
 
 func clearServiceSecretMount(root string) error {

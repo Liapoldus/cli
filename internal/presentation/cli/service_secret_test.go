@@ -72,13 +72,8 @@ func TestServiceSecretCreateStoresValueOutsideProjectAndEmitsMetadataOnly(t *tes
 	if relative, err := filepath.Rel(filepath.Dir(statePath), secretRoot); err != nil || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
 		t.Fatalf("secret runtime mount is inside Core state: %q error=%v", relative, err)
 	}
-	staged, err := os.ReadFile(stagedPath)
-	if err != nil || string(staged) != secretValue {
-		t.Fatalf("staged secret=%q error=%v", staged, err)
-	}
-	info, err := os.Stat(stagedPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("staged secret permissions=%v error=%v", info.Mode().Perm(), err)
+	if _, err := os.Stat(stagedPath); !os.IsNotExist(err) {
+		t.Fatalf("new secret was exposed to Core before a Project configuration selected it: %v", err)
 	}
 	for _, file := range []string{"project.yaml", "settings.json"} {
 		if _, err := os.Stat(filepath.Join(root, file)); !os.IsNotExist(err) {
@@ -416,8 +411,8 @@ func TestServiceSecretCreatePreservesStagedValueWhenCoreRejectsMetadataAndCanRet
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(secretRoot)
-	if err != nil || len(entries) != 1 || entries[0].Name() != stagedReference.Reference {
-		t.Fatalf("failed registration did not preserve staged value: %#v error=%v", entries, err)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("unapplied secret was exposed to Core after failed registration: %#v error=%v", entries, err)
 	}
 	if stagedReference.Reference == "" {
 		t.Fatal("Core did not receive the staged opaque reference")
@@ -534,8 +529,8 @@ func TestServiceSecretRotateStagesNewReferenceWithoutRevokingOld(t *testing.T) {
 	if value, err := vault.Resolve(context.Background(), domain.ServiceSecretCredentialReference("local", "server", created.Reference)); err != nil || value != secretValue {
 		t.Fatalf("new vault value=%q error=%v", value, err)
 	}
-	if _, err := os.Stat(filepath.Join(secretRoot, created.Reference)); err != nil {
-		t.Fatalf("new reference was not staged for local Core: %v", err)
+	if _, err := os.Stat(filepath.Join(secretRoot, created.Reference)); !os.IsNotExist(err) {
+		t.Fatalf("new rotation value was exposed to Core before Project apply: %v", err)
 	}
 	var listOutput, listError bytes.Buffer
 	listArgs := []string{"service", "secret", "list", "--target", "local", "--service", "server", studioEventsFlag}
@@ -594,10 +589,12 @@ func TestServiceSecretRotateStagesNewReferenceWithoutRevokingOld(t *testing.T) {
 	}
 }
 
-func TestMaterializeServiceSecretMountUsesOnlyVaultReferences(t *testing.T) {
+func TestMaterializeServiceSecretMountUsesOnlySelectedProjectReferences(t *testing.T) {
 	const reference = "ssr:v1:00112233445566778899aabbccddeeff"
-	const stale = "ssr:v1:ffeeddccbbaa99887766554433221100"
+	const unrelated = "ssr:v1:ffeeddccbbaa99887766554433221100"
+	const stale = "ssr:v1:0123456789abcdef0123456789abcdef"
 	const secretValue = "runtime-only-secret-marker"
+	const unrelatedValue = "unrelated-secret-marker"
 	root := t.TempDir()
 	useRuntimeCache(t, filepath.Join(root, "cache"))
 	target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, StatePath: filepath.Join(root, "core", "core.sqlite")}
@@ -608,22 +605,29 @@ func TestMaterializeServiceSecretMountUsesOnlyVaultReferences(t *testing.T) {
 	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: reference, ServiceID: "server", Purpose: "server.http.auth.credential", Label: "edge credential"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: unrelated, ServiceID: "echo", Purpose: "echo.api.credential", Label: "other service"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := stageServiceSecret(secretRoot, stale, []byte("stale-mount-value")); err != nil {
 		t.Fatal(err)
 	}
 	vault := &memoryCredentialVault{values: map[string]string{
 		domain.ServiceSecretCredentialReference("local", "server", reference): secretValue,
+		domain.ServiceSecretCredentialReference("local", "echo", unrelated):   unrelatedValue,
 	}}
 	runner := Runner{CredentialVault: vault}
-	if err := runner.materializeServiceSecretMount(context.Background(), target, true); err != nil {
+	services := []domain.Service{{ID: "server", Settings: json.RawMessage(`{"auth":{"credential":"` + reference + `"}}`)}}
+	if err := runner.materializeServiceSecretMount(context.Background(), target, true, services); err != nil {
 		t.Fatal(err)
 	}
 	actual, err := os.ReadFile(filepath.Join(secretRoot, reference))
 	if err != nil || string(actual) != secretValue {
 		t.Fatalf("materialized secret=%q error=%v", actual, err)
 	}
-	if _, err := os.Stat(filepath.Join(secretRoot, stale)); !os.IsNotExist(err) {
-		t.Fatalf("unindexed stale value survived runtime rematerialization: %v", err)
+	for _, omitted := range []string{stale, unrelated} {
+		if _, err := os.Stat(filepath.Join(secretRoot, omitted)); !os.IsNotExist(err) {
+			t.Fatalf("secret outside the selected Project survived rematerialization (%s): %v", omitted, err)
+		}
 	}
 	indexPath, err := stagedServiceSecretIndexPath(target)
 	if err != nil {
@@ -636,11 +640,17 @@ func TestMaterializeServiceSecretMountUsesOnlyVaultReferences(t *testing.T) {
 	if err := os.Remove(filepath.Join(secretRoot, reference)); err != nil {
 		t.Fatal(err)
 	}
-	if err := runner.materializeServiceSecretMount(context.Background(), target, false); err != nil {
+	if err := stageServiceSecret(secretRoot, stale, []byte("previously-active-secret")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.materializeServiceSecretMount(context.Background(), target, false, services); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(secretRoot, reference)); err != nil {
 		t.Fatalf("missing runtime material was not restored from the vault: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(secretRoot, stale)); err != nil {
+		t.Fatalf("candidate preparation removed the previous active secret before apply success: %v", err)
 	}
 }
 

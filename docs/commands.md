@@ -430,10 +430,17 @@ liapoldus service secret revoke --target local --project . --service server \
 
 `create` и `rotate` принимают значение через скрытый prompt. Studio использует
 host-owned secure stdin; secret value не помещается в argv, stdout/stderr,
-Project или Core metadata. `rotate` сохраняет новую ссылку и значение в
-локальном OS vault, регистрирует только opaque metadata в Core и возвращает
-состояние `staged`. Если регистрация Core не удалась, `list` покажет pending
-registration, а `register` повторит её без повторного ввода значения.
+Project или Core metadata. `rotate` сохраняет новую ссылку и значение только
+в локальном OS vault, регистрирует только opaque metadata в Core и возвращает
+состояние `staged`. Значение не попадает в mount Core до выбора ссылки в
+конфигурации Project. При подготовке `dev apply` или `runtime start` CLI снимает
+immutable snapshot и добавляет в private read-only mount только ссылки из
+настроек его сервисов. Во время проверки кандидата предыдущие активные файлы
+сохраняются; после успешного ACK всех реплик CLI оставляет только ссылки
+применённой конфигурации. При отказе Core или реплики старое значение остаётся
+доступным для активной конфигурации, а кандидат — для повтора. Если регистрация
+Core не удалась, `list` покажет pending registration, а `register` повторит её
+без повторного ввода значения.
 
 Безопасный порядок ротации: создать новую ссылку, заменить ссылку в Project,
 проверить redacted diff и подтвердить публичные/security-sensitive изменения,

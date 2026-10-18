@@ -351,6 +351,18 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 	if target.Transport != domain.TransportLocalProcess {
 		return fail(stderr, application.ExitTarget, "Docker runtime requires a local-process target")
 	}
+	sourceProjectPath := options.project
+	if action == "start" && options.revision == domain.WorkingTreeRevision {
+		if r.Snapshots == nil {
+			return fail(stderr, application.ExitValidation, "runtime start requires an immutable snapshot of the selected Project working tree")
+		}
+		snapshot, snapshotErr := r.Snapshots.Capture(ctx, options.project)
+		if snapshotErr != nil {
+			return fail(stderr, application.ExitValidation, fmt.Sprintf("capture immutable Project snapshot: %v", snapshotErr))
+		}
+		defer snapshot.Close()
+		options.project = snapshot.RootPath()
+	}
 	label := runtimeLabel("target", target.Name)
 	status := r.Docker.Probe(ctx)
 	if action == "start" || action == "restart" {
@@ -381,6 +393,10 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		if err := validateRuntimePlanTrusted(plan); err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
+		bundle, bundleErr := (application.BundleService{Source: r.Source}).Build(ctx, options.project, options.revision, options.target)
+		if bundleErr != nil {
+			return fail(stderr, application.ExitValidation, fmt.Sprintf("build runtime configuration: %v", bundleErr))
+		}
 		if targetPlatform := strings.TrimSpace(target.RuntimePlatform); targetPlatform != "" {
 			for _, service := range plan.Services {
 				if service.Artifact.Platform != targetPlatform {
@@ -407,7 +423,7 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 				_, _ = fmt.Fprintln(stderr, "runtime_start_incomplete: containers retained for logs/inspect; correct the reported error and retry Run")
 			}
 		}()
-		coreStart, startCoreErr := r.startDockerCore(ctx, target, label)
+		coreStart, startCoreErr := r.startDockerCore(ctx, target, label, bundle.Services)
 		if startCoreErr != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core start: %v", startCoreErr))
 		}
@@ -478,15 +494,11 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 		// does not enforce the deployment command's clean-working-tree policy:
 		// Studio runtime is the local developer loop and must be able to run the
 		// current working tree. The CLI still sends only the typed bundle to Core.
-		bundle, bundleErr := (application.BundleService{Source: r.Source}).Build(ctx, options.project, options.revision, options.target)
-		if bundleErr != nil {
-			return fail(stderr, application.ExitValidation, fmt.Sprintf("build runtime configuration: %v", bundleErr))
-		}
 		projectID, projectErr := r.Source.ProjectID(ctx, options.project, bundle.Revision)
 		if projectErr != nil {
 			return fail(stderr, application.ExitValidation, fmt.Sprintf("read project identity: %v", projectErr))
 		}
-		repository, repositoryErr := r.Source.RemoteOrigin(ctx, options.project)
+		repository, repositoryErr := r.Source.RemoteOrigin(ctx, sourceProjectPath)
 		if repositoryErr != nil {
 			return fail(stderr, application.ExitValidation, fmt.Sprintf("read project repository: %v", repositoryErr))
 		}
@@ -510,6 +522,10 @@ func (r Runner) runtimeOperation(ctx context.Context, action string, args []stri
 				keepRuntime = true
 				return fail(stderr, application.ExitOperation, fmt.Sprintf("Core configuration operation: %v; containers remain running so Studio can inspect metadata and retry", waitErr))
 			}
+		}
+		if err := r.materializeServiceSecretMount(ctx, target, true, bundle.Services); err != nil {
+			keepRuntime = true
+			return fail(stderr, application.ExitTarget, fmt.Sprintf("Core applied the Project configuration, but local service-secret cleanup failed: %v", err))
 		}
 		policies, policyErr := application.LinkPolicies(bundle.Links)
 		if policyErr != nil {

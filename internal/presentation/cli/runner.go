@@ -617,7 +617,7 @@ func (r Runner) coreBinary(ctx context.Context, args []string, stdout, stderr io
 	previousTarget := target
 	target.CoreBinary = filepath.Clean(options.path)
 	target.CoreBinaryDigest = digest
-	started, err := r.startDockerCore(ctx, target, runtimeLabel("target", target.Name))
+	started, err := r.startDockerCore(ctx, target, runtimeLabel("target", target.Name), nil)
 	if err != nil {
 		return fail(stderr, application.ExitTarget, fmt.Sprintf("Core binary update failed; previous target configuration was preserved. The existing Core may be stopped; run `liapoldus core start --target %s` to recover it: %v", previousTarget.Name, err))
 	}
@@ -794,8 +794,16 @@ func (r Runner) development(ctx context.Context, args []string, stdout, stderr i
 			return fail(stderr, application.ExitOperation, err.Error())
 		}
 	}
+	var secretTarget domain.Target
+	if registry := r.registry(options.targets); registry != nil {
+		secretTarget, err = registry.Find(options.target)
+		if err != nil && !errors.Is(err, domain.ErrTargetNotConfigured) {
+			return fail(stderr, application.ExitTarget, err.Error())
+		}
+	}
 	service := application.DevelopmentDeploymentService{
 		Source: r.Source, Core: client, Snapshots: r.Snapshots,
+		Secrets:  developmentServiceSecretRuntime{runner: r, target: secretTarget},
 		Recovery: recovery, RecoveryTargetKey: applyqueue.TargetKey(options.target, connection.Endpoint),
 		OnOperationState: studioOperationObserver(ctx, stdout, "local"),
 	}

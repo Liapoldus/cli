@@ -40,10 +40,10 @@
   fields and never contain the secret value.
 - [x] Added `liapoldus service secret list|create|rotate|register|revoke --target local
   --service <id>`. Create accepts secure stdin or a hidden terminal prompt,
-  stores the value in the OS keyring, stages it with mode `0600` under the
-  target-owned Core `secrets/` directory, and reports only safe reference
-  metadata. If Core registration fails, the reference, vault entry and staged
-  value remain available for `service secret register` retry. Revoke requires
+  stores the value in the OS keyring and reports only safe reference metadata.
+  It does not expose the value to Core until a Project configuration selects
+  that reference. If Core registration fails, the reference and vault entry
+  remain available for `service secret register` retry. Revoke requires
   `--confirm` and clears local copies only after Core accepts it.
 - [x] Rotation creates a separate reference and records its source reference in
   local metadata. Listing reports staged registration and rotation states;
@@ -99,6 +99,27 @@
   candidate was built from `d7f82cd` and its temporary file is no longer
   present. The live Core container still lacks the secret catalog endpoint,
   so Core update and the full secret workflow remain unverified.
+
+## Project-scoped local secret runtime materialization — 2026-10-18
+
+- [x] `service secret create|rotate|register` now stores values in the OS vault
+  and the local opaque-reference index without placing them in Core's bind mount.
+- [x] `runtime start` captures `WORKING_TREE` as an immutable private Project
+  snapshot before reading artifacts and settings. It stages only references
+  found in that snapshot's service settings.
+- [x] `dev apply` stages only references found in its immutable snapshot before
+  Core validates the candidate. Existing mounted values remain available while
+  the candidate is pending or rejected; after success, the mount is pruned to
+  the applied Project references. Missing vault values, cross-service refs and
+  malformed opaque references fail closed.
+- [x] Added regression coverage that observes both old and candidate values
+  during Core validation, confirms the previous value remains after rejection,
+  and confirms it is pruned only after accepted configuration or retained after
+  failed replica acknowledgement. Secret creation and failed registration
+  tests assert that unselected values never reach the Core mount.
+- [x] `GOWORK=off make check` and `GOWORK=off make test-race` pass for this
+  checkpoint. Live macOS/Core apply and replica-ACK verification still awaits
+  the exact-digest native Studio trust flow and current Core runtime.
 
 ## Lease-expiry recovery checkpoint — 2026-10-17
 

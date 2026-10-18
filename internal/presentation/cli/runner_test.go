@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -64,6 +65,7 @@ func TestApplyUsesRequestedGitRevision(t *testing.T) {
 }
 
 func TestDevApplyUsesImmutableWorkingTreeSnapshotOnLocalTarget(t *testing.T) {
+	useRuntimeCache(t, filepath.Join(t.TempDir(), "runtime-cache"))
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
 	writeRunnerFile(t, project, "services/echo/settings.json", `{"message":"committed"}`)
@@ -125,6 +127,7 @@ func TestDevApplyUsesImmutableWorkingTreeSnapshotOnLocalTarget(t *testing.T) {
 }
 
 func TestDevApplyReusesKeyForSameRevisionAndChangesAfterAcceptedGeneration(t *testing.T) {
+	useRuntimeCache(t, filepath.Join(t.TempDir(), "runtime-cache"))
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
 	writeRunnerFile(t, project, "services/echo/settings.json", `{"message":"draft"}`)
@@ -175,6 +178,7 @@ func TestDevApplyReusesKeyForSameRevisionAndChangesAfterAcceptedGeneration(t *te
 }
 
 func TestDevApplyRecoversAcceptedOperationAcrossRunnerProcesses(t *testing.T) {
+	useRuntimeCache(t, filepath.Join(t.TempDir(), "runtime-cache"))
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
 	writeRunnerFile(t, project, "services/echo/settings.json", `{"message":"draft"}`)
@@ -265,6 +269,7 @@ func TestDevApplyRecoversAcceptedOperationAcrossRunnerProcesses(t *testing.T) {
 }
 
 func TestDevApplyFailedRecoveryRequiresExplicitRetryAndUsesFreshKey(t *testing.T) {
+	useRuntimeCache(t, filepath.Join(t.TempDir(), "runtime-cache"))
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
 	writeRunnerFile(t, project, "services/echo/settings.json", `{"message":"draft"}`)
@@ -324,6 +329,7 @@ func TestDevApplyFailedRecoveryRequiresExplicitRetryAndUsesFreshKey(t *testing.T
 }
 
 func TestStudioDevApplyWaitStreamsCoreOperationStateOnly(t *testing.T) {
+	useRuntimeCache(t, filepath.Join(t.TempDir(), "runtime-cache"))
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")
 	writeRunnerFile(t, project, "services/echo/settings.json", `{"message":"draft"}`)
@@ -417,6 +423,114 @@ func TestStudioDevApplyWaitStreamsCoreOperationStateOnly(t *testing.T) {
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "local-secret") {
 		t.Fatal("Core credential leaked into Studio JSONL events")
+	}
+}
+
+func TestDevApplyStagesOnlySelectedProjectSecretsAndPreservesOldValuesOnRejection(t *testing.T) {
+	const oldReference = "ssr:v1:ffeeddccbbaa99887766554433221100"
+	const candidateReference = "ssr:v1:00112233445566778899aabbccddeeff"
+	for _, test := range []struct {
+		name             string
+		applyCode        int
+		operationFailure bool
+		oldRemains       bool
+	}{
+		{name: "accepted configuration prunes superseded reference", applyCode: http.StatusOK},
+		{name: "rejected configuration keeps active reference", applyCode: http.StatusUnprocessableEntity, oldRemains: true},
+		{name: "failed replica acknowledgement keeps active reference", applyCode: http.StatusOK, operationFailure: true, oldRemains: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			useRuntimeCache(t, filepath.Join(root, "runtime-cache"))
+			project := filepath.Join(root, "project")
+			writeRunnerFile(t, project, "project.yaml", "id: secret-runtime-test\n")
+			writeRunnerFile(t, project, "services/server/settings.json", `{"auth":{"credentialRef":"`+candidateReference+`"}}`)
+			statePath := filepath.Join(root, "core", "core.sqlite")
+			target := domain.Target{Name: "local", Transport: domain.TransportLocalProcess, StatePath: statePath, CredentialRef: "core-token"}
+			secretRoot, err := serviceSecretRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: oldReference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "previous"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := addStagedServiceSecretReference(target, stagedServiceSecretReference{Reference: candidateReference, ServiceID: "server", Purpose: "http.auth.bearer", Label: "candidate"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := stageServiceSecret(secretRoot, oldReference, []byte("old-runtime-secret")); err != nil {
+				t.Fatal(err)
+			}
+			vault := &memoryCredentialVault{values: map[string]string{
+				"core-token": "management-token",
+				domain.ServiceSecretCredentialReference("local", "server", oldReference):       "old-runtime-secret",
+				domain.ServiceSecretCredentialReference("local", "server", candidateReference): "candidate-runtime-secret",
+			}}
+			mountContainedBoth := false
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/api/config-bundles/plan":
+					var input domain.ConfigBundleRequest
+					if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+						t.Errorf("decode plan request: %v", err)
+					}
+					_, _ = fmt.Fprintf(response, `{"plan":{"valid":true,"digest":%q,"services":[{"id":"server","currentRevision":4}]} ,"requestId":"req-plan"}`, input.Bundle.Digest)
+				case "/api/config-bundles/apply":
+					oldPath := filepath.Join(secretRoot, oldReference)
+					candidatePath := filepath.Join(secretRoot, candidateReference)
+					_, oldErr := os.Stat(oldPath)
+					candidate, candidateErr := os.ReadFile(candidatePath)
+					mountContainedBoth = oldErr == nil && candidateErr == nil && string(candidate) == "candidate-runtime-secret"
+					if !mountContainedBoth {
+						t.Errorf("old and candidate values must both remain available while Core validates: old=%v candidate=%v", oldErr, candidateErr)
+					}
+					if test.applyCode != http.StatusOK {
+						response.WriteHeader(test.applyCode)
+						_, _ = io.WriteString(response, `{"code":"configuration_rejected","detail":"validation failed"}`)
+						return
+					}
+					if test.operationFailure {
+						_, _ = io.WriteString(response, `{"operations":["op-1"],"requestId":"req-apply"}`)
+						return
+					}
+					_, _ = io.WriteString(response, `{"operations":[],"requestId":"req-apply"}`)
+				case "/api/operations/op-1":
+					_, _ = io.WriteString(response, `{"id":"op-1","kind":"config_bundle.apply","state":"failed","createdAt":"2026-10-18T10:00:00Z","requestId":"req-operation","errorCode":"validation_failed"}`)
+				default:
+					t.Errorf("unexpected Core request: %s %s", request.Method, request.URL.Path)
+					http.NotFound(response, request)
+				}
+			}))
+			defer server.Close()
+			target.Endpoint = server.URL
+			runner := Runner{
+				Source: git.Repository{}, Snapshots: git.Snapshotter{}, Registry: targetRegistryStub{target: target},
+				Credentials: vault, CredentialVault: vault, ApplyRecovery: applyqueue.Journal{Directory: filepath.Join(root, "apply-queue")},
+				CoreFactory: func(connection domain.CoreConnection) (domain.CoreClient, error) { return coreapi.New(connection) },
+			}
+			var stdout, stderr bytes.Buffer
+			args := []string{"dev", "apply", "--project", project, "--target", "local", "--confirm"}
+			if test.operationFailure {
+				args = append(args, "--wait")
+			}
+			code := runner.RunContext(context.Background(), args, &stdout, &stderr)
+			wantSuccess := test.applyCode == http.StatusOK && !test.operationFailure
+			if wantSuccess && code != application.ExitOK {
+				t.Fatalf("apply failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			if !wantSuccess && code == application.ExitOK {
+				t.Fatalf("Core rejection unexpectedly succeeded: stdout=%s stderr=%s", stdout.String(), stderr.String())
+			}
+			if !mountContainedBoth {
+				t.Fatal("Core did not observe the active and candidate secret values during validation")
+			}
+			_, oldErr := os.Stat(filepath.Join(secretRoot, oldReference))
+			if (oldErr == nil) != test.oldRemains {
+				t.Fatalf("old active secret presence after apply=%v, want %v (error=%v)", oldErr == nil, test.oldRemains, oldErr)
+			}
+			if _, err := os.Stat(filepath.Join(secretRoot, candidateReference)); err != nil {
+				t.Fatalf("candidate secret was not retained for the selected Project: %v", err)
+			}
+		})
 	}
 }
 

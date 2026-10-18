@@ -21,9 +21,18 @@ type DevelopmentDeploymentService struct {
 	Source            domain.ProjectSource
 	Core              domain.CoreClient
 	Snapshots         domain.ProjectSnapshotter
+	Secrets           DevelopmentSecretRuntime
 	Recovery          domain.ApplyRecoveryStore
 	RecoveryTargetKey string
 	OnOperationState  func(operationID, state string)
+}
+
+// DevelopmentSecretRuntime stages only the references from the immutable
+// Project being applied. Finalize removes superseded values only after Core
+// reports successful application to the selected service replicas.
+type DevelopmentSecretRuntime interface {
+	Prepare(context.Context, []domain.Service) error
+	Finalize(context.Context, []domain.Service) error
 }
 
 type DevelopmentApplyResult struct {
@@ -100,6 +109,12 @@ func (s DevelopmentDeploymentService) Apply(ctx context.Context, projectPath, ta
 			return domain.Bundle{}, DevelopmentApplyResult{}, fmt.Errorf("derive explicit retry idempotency key: %w", err)
 		}
 	}
+	if s.Secrets == nil {
+		return domain.Bundle{}, DevelopmentApplyResult{}, errors.New("development apply requires local service-secret runtime support")
+	}
+	if err := s.Secrets.Prepare(ctx, bundle.Services); err != nil {
+		return domain.Bundle{}, DevelopmentApplyResult{}, fmt.Errorf("prepare local service secrets for the Project: %w", err)
+	}
 	intent := domain.ApplyIntent{Scope: "config-bundle/" + request.Project.Revision, Keys: make([]string, 0, len(request.Bundle.Services))}
 	for _, service := range request.Bundle.Services {
 		intent.Keys = append(intent.Keys, idempotencyKey+":"+service.ID)
@@ -115,6 +130,9 @@ func (s DevelopmentDeploymentService) Apply(ctx context.Context, projectPath, ta
 	}
 	applyResult := DevelopmentApplyResult{CoreResponse: result.Raw}
 	if len(result.OperationIDs) == 0 {
+		if err := s.Secrets.Finalize(ctx, bundle.Services); err != nil {
+			return bundle, applyResult, fmt.Errorf("Core accepted the Project configuration, but local service-secret cleanup failed: %w", err)
+		}
 		if err := s.Recovery.Clear(s.RecoveryTargetKey); err != nil {
 			return domain.Bundle{}, DevelopmentApplyResult{}, fmt.Errorf("clear empty apply recovery intent: %w", err)
 		}
@@ -125,6 +143,9 @@ func (s DevelopmentDeploymentService) Apply(ctx context.Context, projectPath, ta
 			return bundle, applyResult, err
 		}
 		if len(result.OperationIDs) > 0 {
+			if err := s.Secrets.Finalize(ctx, bundle.Services); err != nil {
+				return bundle, applyResult, fmt.Errorf("Core applied the Project configuration, but local service-secret cleanup failed: %w", err)
+			}
 			if err := s.Recovery.Clear(s.RecoveryTargetKey); err != nil {
 				return bundle, applyResult, fmt.Errorf("clear completed apply recovery intent: %w", err)
 			}

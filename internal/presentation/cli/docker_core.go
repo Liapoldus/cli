@@ -57,7 +57,7 @@ func parseDockerCoreState(body []byte) (dockerCoreState, error) {
 	return state, nil
 }
 
-func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label string) (dockerCoreStartResult, error) {
+func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label string, services []domain.Service) (dockerCoreStartResult, error) {
 	result := dockerCoreStartResult{}
 	if target.Transport != domain.TransportLocalProcess {
 		return result, errors.New("Docker Core lifecycle requires a local-process target")
@@ -134,6 +134,9 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 		return result, err
 	}
 	request.CoreBinaryDigest = binaryDigest
+	if err := r.materializeServiceSecretMount(ctx, target, false, services); err != nil {
+		return result, err
+	}
 	if err := r.Docker.NetworkCreate(ctx, network, label); err != nil {
 		return result, fmt.Errorf("create Docker runtime network: %w", err)
 	}
@@ -179,9 +182,6 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 				return dockerCoreStartResult{}, fmt.Errorf("remove stopped Core container: %w", err)
 			}
 		}
-	}
-	if err := r.materializeServiceSecretMount(ctx, target, true); err != nil {
-		return result, err
 	}
 	if err := r.Docker.RunContainer(ctx, request); err != nil {
 		return result, fmt.Errorf("start Core Docker container: %w", describeCoreMountFailure(err, request, target.Name))
@@ -655,7 +655,7 @@ func (r Runner) coreDockerCommand(ctx context.Context, action string, target dom
 	label := runtimeLabel("target", target.Name)
 	switch action {
 	case "start":
-		started, err := r.startDockerCore(ctx, target, label)
+		started, err := r.startDockerCore(ctx, target, label, nil)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
@@ -679,15 +679,12 @@ func (r Runner) coreDockerCommand(ctx context.Context, action string, target dom
 		}
 		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "stopped": stopped})
 	case "restart":
-		container, exists, err := r.inspectTargetCore(ctx, label)
+		_, exists, err := r.inspectTargetCore(ctx, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		if !exists {
 			return fail(stderr, application.ExitTarget, "Core container is not present in the selected target; start it first")
-		}
-		if err := r.materializeServiceSecretMount(ctx, target, !container.State.Running); err != nil {
-			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		if err := r.Docker.RestartContainer(ctx, coreContainer); err != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("restart Core container: %v", err))
