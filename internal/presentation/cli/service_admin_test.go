@@ -52,7 +52,7 @@ func TestServiceAdminQueryNarrowsRowsToLiveDescriptorColumns(t *testing.T) {
 		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return core, nil },
 	}
 	var stdout, stderr bytes.Buffer
-	code := runner.Run([]string{"service", "admin", "query", "server", "--page", "sites", "--section", "sites", "--cursor", "cursor-1", "--target", "local"}, &stdout, &stderr)
+	code := runner.Run([]string{"service", "admin", "query", "server", "--page", "sites", "--section", "sites", "--surface-digest", core.adminSurfaceCoreClient.surface.Digest, "--cursor", "cursor-1", "--target", "local"}, &stdout, &stderr)
 	if code != application.ExitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
@@ -81,7 +81,8 @@ func TestServiceAdminActionUsesProjectInputAndHidesServiceResult(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := runner.Run([]string{"service", "admin", "invoke", "server", "--page", "sites", "--section", "sites", "--action", "rollback",
-		"--project", project, "--request-file", "action.json", "--if-match", "r-2", "--idempotency-key", "action-1", "--target", "local", "--confirm"}, &stdout, &stderr)
+		"--project", project, "--request-file", "action.json", "--surface-digest", core.adminSurfaceCoreClient.surface.Digest,
+		"--if-match", "r-2", "--idempotency-key", "action-1", "--target", "local", "--confirm"}, &stdout, &stderr)
 	if code != application.ExitOK || string(stdout.Bytes()) != "{\"completed\":true}\n" {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
@@ -96,8 +97,9 @@ func TestServiceAdminActionUsesProjectInputAndHidesServiceResult(t *testing.T) {
 
 func TestServiceAdminActionRejectsUnconfirmedAndMismatchedCASBeforeCore(t *testing.T) {
 	for name, extra := range map[string][]string{
-		"no confirmation": {"--if-match", "r-2", "--idempotency-key", "action-1", "--target", "local"},
-		"mismatched CAS":  {"--if-match", "r-1", "--idempotency-key", "action-1", "--target", "local", "--confirm"},
+		"no confirmation":      {"--if-match", "r-2", "--idempotency-key", "action-1", "--target", "local"},
+		"mismatched CAS":       {"--if-match", "r-1", "--idempotency-key", "action-1", "--target", "local", "--confirm"},
+		"stale surface digest": {"--surface-digest", "sha256:" + strings.Repeat("0", 64), "--if-match", "r-2", "--idempotency-key", "action-1", "--target", "local", "--confirm"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			project := t.TempDir()

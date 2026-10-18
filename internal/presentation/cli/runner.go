@@ -904,6 +904,7 @@ type commandOptions struct {
 	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint     string
 	service, resource, requestFile                                                  string
 	page, section, action, cursor, artifactFile, contentType, metadataFile, ifMatch string
+	surfaceDigest                                                                   string
 	purpose, label, reference                                                       string
 	expectedGeneration                                                              *int64
 	approvalEvidence                                                                string
@@ -961,6 +962,8 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.endpoint = value
 		case "--idempotency-key":
 			options.idempotencyKey = value
+		case "--surface-digest":
+			options.surfaceDigest = value
 		case "--targets":
 			options.targets = value
 		case "--expected-generation":

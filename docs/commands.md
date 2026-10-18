@@ -403,6 +403,12 @@ service-owned descriptor и его digest из Core Management API. Studio ис�
 его для отрисовки объявленных action forms; CLI не интерпретирует product
 payload schema и не вызывает сервис напрямую.
 
+Studio передаёт digest прочитанного descriptor-а в `service admin query` и
+`service admin invoke` через `--surface-digest`. CLI сравнивает его с повторно
+полученным live digest до запроса; если описание изменилось, запрос прекращается
+и Studio может перечитать поверхность. При прямом вызове CLI этот флаг можно
+опустить: команда сама получает и проверяет актуальный descriptor.
+
 `service resource publish` — отдельный explicit workflow для объявленного
 service artifact action. `--if-match` передаётся только для action с CAS
 revision; флаг optional. Artifact и JSON metadata должны быть обычными файлами

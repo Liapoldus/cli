@@ -57,6 +57,9 @@ func (runner Runner) serviceAdmin(ctx context.Context, args []string, stdout, st
 	if runner.CoreFactory == nil {
 		return fail(stderr, application.ExitTarget, "Core client is not configured")
 	}
+	if options.surfaceDigest != "" && !validArtifactDigest(options.surfaceDigest) {
+		return fail(stderr, application.ExitArguments, "--surface-digest is invalid")
+	}
 	connection, err := runner.credentials(ctx, options)
 	if err != nil {
 		return fail(stderr, application.ExitTarget, err.Error())
@@ -72,6 +75,9 @@ func (runner Runner) serviceAdmin(ctx context.Context, args []string, stdout, st
 	surface, descriptor, err := readServiceAdminDescriptor(ctx, reader, args[1])
 	if err != nil {
 		return fail(stderr, application.ExitTarget, err.Error())
+	}
+	if options.surfaceDigest != "" && surface.Digest != options.surfaceDigest {
+		return fail(stderr, application.ExitValidation, "service admin surface changed since it was read")
 	}
 	if args[0] == "query" {
 		if options.page == "" || options.section == "" || !safeAdminIdentifier.MatchString(options.page) || !safeAdminIdentifier.MatchString(options.section) {
