@@ -881,7 +881,9 @@ func serviceArtifactFromContainer(inspect []byte, container, targetLabel string,
 		return domain.Artifact{}, errors.New("staged service binary is outside target-owned runtime storage")
 	}
 	digest, err := digestFile(source)
-	if err != nil || filepath.Base(source) != serviceID+"-"+strings.TrimPrefix(digest, "sha256:") {
+	stagedDigest := strings.TrimPrefix(digest, "sha256:")
+	base := filepath.Base(source)
+	if err != nil || (base != serviceID+"-"+stagedDigest && base != serviceID+"-rollback-"+stagedDigest) {
 		return domain.Artifact{}, errors.New("staged service binary digest cannot be proven")
 	}
 	for _, artifact := range artifacts {

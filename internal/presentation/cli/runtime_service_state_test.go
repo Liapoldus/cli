@@ -274,6 +274,25 @@ func TestPreviousArtifactForStoppedServiceComesFromVerifiedReadOnlyMount(t *test
 	if err != nil || got.Version != trusted.Version || got.Digest != digest {
 		t.Fatalf("previous artifact = %+v, %v; want verified trusted artifact", got, err)
 	}
+
+	rollbackSource := filepath.Join(staging, "server-rollback-"+strings.TrimPrefix(digest, "sha256:"))
+	if err := os.WriteFile(rollbackSource, binary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inspect, err = json.Marshal([]any{map[string]any{
+		"Name":   "/liapoldus-server",
+		"Config": map[string]any{"Labels": map[string]string{"com.liapoldus.runtime": "studio-local"}},
+		"Mounts": []map[string]any{{"Source": rollbackSource, "Destination": "/liapoldus/server", "RW": false}},
+		"State":  map[string]any{"Status": "exited", "Running": false},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = serviceArtifactFromContainer(inspect, "liapoldus-server", "studio-local", target, "server", "linux/arm64", []domain.Artifact{trusted})
+	if err != nil || got.Version != trusted.Version || got.Digest != digest {
+		t.Fatalf("rollback artifact = %+v, %v; want verified trusted artifact", got, err)
+	}
+
 	trusted.Trusted = false
 	if _, err := serviceArtifactFromContainer(inspect, "liapoldus-server", "studio-local", target, "server", "linux/arm64", []domain.Artifact{trusted}); err == nil {
 		t.Fatal("untrusted old artifact was accepted for rollback")
