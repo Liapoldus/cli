@@ -1,5 +1,32 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## macOS Docker context-aware Engine start — 2026-10-18
+
+- Commit `39845869c81a83c40d215702c5642a512893d36f` is pushed to
+  `origin/main`. On macOS, automatic Engine start now reads the selected Docker
+  context and endpoint, honors `DOCKER_CONTEXT` over `DOCKER_HOST`, starts
+  OrbStack for the OrbStack context/socket, and starts Docker Desktop for its
+  context/socket. Unknown contexts fail closed without switching contexts.
+- Regression cases cover OrbStack and Docker Desktop contexts/endpoints,
+  `DOCKER_HOST`/`DOCKER_CONTEXT` precedence, the local Docker socket, and an
+  unknown remote context. `GOWORK=off GOFLAGS=-p=1 go test
+  ./internal/infrastructure/docker -count=1` passes.
+- Full owner gates pass after the change:
+  `GOTOOLCHAIN=go1.26.0 GOWORK=off GOFLAGS=-p=1
+  LIAPOLDUS_CORE_OPENAPI="/Users/docup/Projects/Liapoldus Engine/core/contracts/v1/management.openapi.yaml"
+  make check` and
+  `GOTOOLCHAIN=go1.26.0 GOWORK=off GOFLAGS=-p=1 make test-race`.
+- Built clean macOS/arm64 candidate from this source commit:
+  `/tmp/liapoldus-cli-orbstack-2026-10-18`, SHA-256
+  `68db41f10d7b566da8d6ff6e8f30c04d567c811811a96ab9f1d73d5800ab0bd9`;
+  `go version -m` reports revision `39845869c81a83c40d215702c5642a512893d36f`
+  and `vcs.modified=false`. It has not been selected or installed in Studio.
+- Local OrbStack context inspection resolves to
+  `unix:///Users/docup/.orbstack/run/docker.sock`. This confirms the selector
+  will choose OrbStack on this host; it does not resolve the separate missing
+  Core TLS bootstrap files. No target profile, certificate, Project, runtime,
+  or secret state changed.
+
 ## macOS local runtime retry — 2026-10-18
 
 - Studio's approved Run action was retried after starting OrbStack. `docker
