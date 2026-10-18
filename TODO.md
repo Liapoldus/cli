@@ -1,5 +1,21 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Current local CLI candidate and owner checks — 2026-10-18
+
+- Current published source HEAD is `978c054`. `GOWORK=off make check` and
+  `GOWORK=off make test-race` both pass on that source.
+- The current Darwin/arm64 CLI candidate was built from the exact HEAD at
+  `/tmp/liapoldus-cli-2026-10-18-978c054`, SHA-256
+  `9ad8c230253ffc16fa628c3c6f3e135a55ac45467c561fe097a40b360832c8f5`.
+  `file` confirms Mach-O arm64 and `go version -m` records revision
+  `978c05495de819430b0ec41f4faa7eb47cdbd3c0`, `vcs.modified=false`. It has not
+  been selected, installed or run; exact-digest Studio trust is pending.
+- Studio still selects `/Users/docup/go/bin/liapoldus` at SHA-256
+  `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`, which
+  reports `unsupported service command` for the secret catalog operation. The
+  Core live endpoint is also absent from the running old Core binary. No target,
+  Project, runtime or secret state changed during these preflights.
+
 ## Secret cleanup retry after Core revocation — 2026-10-18
 
 - [x] A local cleanup failure after Core has revoked a reference can now be
