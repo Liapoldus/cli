@@ -19,6 +19,11 @@
   runtime configuration or vault entry was created or changed. This direct
   candidate invocation does not establish which CLI path Studio currently
   selects; packaged host acceptance remains open.
+- Re-ran the targeted source regression:
+  `GOTOOLCHAIN=go1.26.0 GOWORK=off GOFLAGS=-p=1 go test
+  ./internal/presentation/cli -run
+  'TestServiceSecret(Create|Rotate|Revoke)|TestDevApplyStagesOnlySelectedProjectSecrets'
+  -count=1` passes. It does not exercise a live secret write or retirement.
 
 ## Exact-source current macOS CLI candidate — 2026-10-18
 
