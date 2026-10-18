@@ -6,8 +6,11 @@
   secret staging or writing a recovery intent when an apply is already blocked.
   Regression tests cover this refusal. `GOWORK=off GOFLAGS=-p=1
   LIAPOLDUS_CORE_OPENAPI="/Users/docup/Projects/Liapoldus Engine/core/contracts/v1/management.openapi.yaml"
-  make check` and `make test-race` pass. The updated CLI has not yet been built,
-  installed or used for a local apply.
+  make check` and `make test-race` pass. Exact-source Darwin/arm64 build from
+  pushed commit `d7c814b` is at `/tmp/liapoldus-cli-admission-d7c814b`, SHA-256
+  `d7a54b304782b0932ba1e4e83c050a63ebfe9b94f8308813a81759d7c1a8993a`;
+  Go build metadata confirms `vcs.modified=false`. Installation approval for
+  this digest is pending.
 - The currently installed `/Users/docup/go/bin/liapoldus` remains the approved
   build from commit `39845869c81a83c40d215702c5642a512893d36f`, SHA-256
   `68db41f10d7b566da8d6ff6e8f30c04d567c811811a96ab9f1d73d5800ab0bd9`.

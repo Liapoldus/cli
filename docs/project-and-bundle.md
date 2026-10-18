@@ -51,6 +51,14 @@ plan|apply`. CLI делает закрытую копию безопасных p
 Исходный Git index и checkout не меняются. Операция принимается только для
 `local`; production/remote сохраняет commit-based `plan/apply`.
 
+Core plan дополнительно возвращает для каждого service необязательное поле
+`blockedBy` с безопасными кодами состояния, например ожидающей конфигурацией,
+открытым settings rollout или незавершённым traffic rollout. `dev apply` при
+наличии известного blocker завершится до staging локальных secret references и
+до записи recovery intent; после устранения причины можно построить план снова.
+Это предварительная диагностика: Core атомарно проверяет возможность создать
+кандидат и при изменении состояния между plan/apply всё равно откажет.
+
 ## 3. Materialization pipeline
 
 ```mermaid
