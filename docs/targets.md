@@ -112,6 +112,14 @@ Local target может включать:
 системного temp-каталога: Docker VM может не видеть macOS `/var/folders`. Token не
 передаётся в Docker environment. Core удаляет файл после чтения и сохраняет
 только verifier.
+
+Если Docker Engine остановлен, CLI запускает локальное приложение, соответствующее
+выбранному Docker context. На macOS context `orbstack` или socket OrbStack запускает
+OrbStack; `desktop-linux` или socket Docker Desktop запускает Docker Desktop. При
+заданном `DOCKER_CONTEXT` он имеет приоритет над `DOCKER_HOST`. CLI не переключает
+context и отказывается угадывать приложение для неизвестного context, включая
+удалённые endpoints.
+
 Повторный запуск не ротирует credential. Секретные значения не попадают в
 project files, Git, target profile, bundle, container metadata или logs.
 
