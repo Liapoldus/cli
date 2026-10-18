@@ -1,25 +1,33 @@
 # CLI — Studio configurator contract and runtime TODO
 
-## Read-only verification through the selected local CLI binary — 2026-10-18
+## Current local CLI and temporary secret reference — 2026-10-18
 
 - `/Users/docup/go/bin/liapoldus` currently hashes to
   `c33d2114808708be062fb23877da3d48a8c803203ccd3d6be06d2be1227082ae` and
   Go build metadata identifies source commit `e297841`. Typed
   `service secret list --target local --service server` returns a valid
-  `service-secret-references/v1` catalog with one revoked metadata record, no
-  active reference and no pending registrations or rotations. This supersedes
-  older notes below that the Studio-selected CLI lacked this command or that
-  the catalog was empty.
+  `service-secret-references/v1` catalog with one active temporary test
+  reference, one revoked record, and no pending registrations or rotations.
+  The active reference is not in the Project settings or runtime configuration.
+  This supersedes older notes below that the Studio-selected CLI lacked this
+  command or that the catalog was empty.
 - Typed `service status server --target local` reports Server 1.1.11,
   digest `sha256:3f3f66e4d8b852b337d07f39276aa949ca1df5095fa411b88ca976286d4075a1`,
-  generation 93, ready and acknowledged. Readiness still reports the active
+  generation 94, ready and acknowledged. Readiness still reports the active
   settings envelope as schemaVersion 1; Project settings are v2 and have not
   been applied during this check.
-- Rechecked with `service secret list`, `service status server`, `runtime status`,
-  and `GET /echo?text=goal-recheck` on 2026-10-18. `/echo` returned HTTP 200;
-  the runtime reports Core, Echo and Server running. These reads expose no
-  secret values and do not verify new create/rotate, delivery, ACK gating or
-  revoke. No Project, runtime or vault state changed.
+- Rechecked with `service secret list`, `service status server`, and
+  `runtime status` on 2026-10-18. Core, Echo and Server are running. The catalog
+  contains metadata only; secret values are not returned. This confirms local
+  create/list, but not delivery, HTTP auth, rotation, ACK gating or revoke. The
+  authorized test-secret create changed only the local vault and Core reference
+  catalog; it did not modify Project settings or runtime configuration.
+- `dev plan --project <Server Echo Studio> --target local` also succeeds with
+  `plan.valid: true` for working-tree digest
+  `sha256:5dee37ca31227ee1fbd1523f25cfb3c61f82d9aafffc934209fadca44f2a17f2`
+  and reports Server/Echo at generation 94. It is read-only; it does not apply
+  the Project's v2 settings envelope. The macOS Studio migration preview
+  remains the required next step.
 - Targeted source lifecycle regressions re-run on 2026-10-18:
   `GOTOOLCHAIN=go1.26.0 GOWORK=off GOFLAGS=-p=1 go test
   ./internal/presentation/cli -run
