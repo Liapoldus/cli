@@ -1,5 +1,28 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Local secret rotation smoke after trust recovery — 2026-10-18
+
+- `/Users/docup/go/bin/liapoldus` is now the approved Darwin/arm64 build from
+  CLI commit `39845869c81a83c40d215702c5642a512893d36f`, SHA-256
+  `68db41f10d7b566da8d6ff6e8f30c04d567c811811a96ab9f1d73d5800ab0bd9`.
+  After explicit approval, local Core TLS assets were backed up and a new
+  local CA plus target/service certificates were issued; OrbStack's selected
+  Engine now runs Core, Echo and Server.
+- Fresh typed `runtime status` and `service status server` confirm Server
+  1.1.11 ready/acknowledged at generation 95. Its active configuration reports
+  schemaVersion 1, while the Project settings file remains v2 with only
+  `/echo`. `curl` to the published `/echo` route returned HTTP 200.
+- `service secret list --target local --service server` returns two active
+  synthetic references, one revoked record and one staged rotation. These are
+  safe metadata only; the replacement has not been selected in a saved Project
+  snapshot and no grant or rotation ACK has reached Server.
+- The remaining live acceptance depends on the Studio WebView retry with exact
+  host digest `88a4d2b0939f2427…`; that launch approval is pending. Then verify
+  selected Project snapshot materialization, apply success/rejection handling,
+  authenticated HTTP, replica ACK, revoke ordering and restart recovery. Clean
+  up only the approved synthetic route/references. Production remains out of
+  scope.
+
 ## macOS Docker context-aware Engine start — 2026-10-18
 
 - Commit `39845869c81a83c40d215702c5642a512893d36f` is pushed to
@@ -27,7 +50,7 @@
   Core TLS bootstrap files. No target profile, certificate, Project, runtime,
   or secret state changed.
 
-## macOS local runtime retry — 2026-10-18
+## Initial macOS local runtime retry (historical) — 2026-10-18
 
 - Studio's approved Run action was retried after starting OrbStack. `docker
   info --format '{{.ServerVersion}} {{.Name}}'` reports `29.8.2 orbstack`, and
@@ -45,7 +68,7 @@
   trust assets before resuming the authorized local flow; do not generate a
   replacement CA as an implicit repair.
 
-## Current local CLI and staged secret rotation — 2026-10-18
+## Pre-recovery local CLI and staged secret rotation (historical) — 2026-10-18
 
 - `/Users/docup/go/bin/liapoldus` hashes to
   `c33d2114808708be062fb23877da3d48a8c803203ccd3d6be06d2be1227082ae`; Go
