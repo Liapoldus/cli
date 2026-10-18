@@ -3,15 +3,13 @@
 ## Current local CLI candidate and owner checks — 2026-10-18
 
 - `GOWORK=off make check` and `GOWORK=off make test-race` both pass on the
-  current CLI source code, built from commit `978c054`.
-- The current Darwin/arm64 CLI candidate was built from the exact HEAD at
-  `/tmp/liapoldus-cli-2026-10-18-978c054`, SHA-256
-  `9ad8c230253ffc16fa628c3c6f3e135a55ac45467c561fe097a40b360832c8f5`.
+  current CLI source code at commit `52cda34`.
+- The current Darwin/arm64 CLI candidate was built from that exact commit at
+  `/tmp/liapoldus-cli-2026-10-18-52cda34`, SHA-256
+  `e0a60a59752fea267b420bfa2ac956f5d842fa7ebee5700e5b5115b79787a1a7`.
   `file` confirms Mach-O arm64 and `go version -m` records revision
-  `978c05495de819430b0ec41f4faa7eb47cdbd3c0`, `vcs.modified=false`. It has not
+  `52cda3415f8db53b10eca37ca40aa4bdbe5b65bd`, `vcs.modified=false`. It has not
   been selected, installed or run; exact-digest Studio trust is pending.
-- Current HEAD `f6f6389` adds only this TODO checkpoint; the candidate contains
-  the same CLI source code and records its build revision in Go metadata.
 - Studio still selects `/Users/docup/go/bin/liapoldus` at SHA-256
   `f04d7b013f11cbf5848ba80291bb8b2b85b5dbeaf40f2cb97ae319b38c3419d1`, which
   reports `unsupported service command` for the secret catalog operation. The
@@ -120,6 +118,10 @@
 - [x] `GOWORK=off make check` and `GOWORK=off make test-race` pass for this
   checkpoint. Live macOS/Core apply and replica-ACK verification still awaits
   the exact-digest native Studio trust flow and current Core runtime.
+- [x] Built the exact-source macOS/arm64 CLI candidate for commit `52cda34`:
+  `/tmp/liapoldus-cli-2026-10-18-52cda34`, SHA-256
+  `e0a60a59752fea267b420bfa2ac956f5d842fa7ebee5700e5b5115b79787a1a7`.
+  It is not installed or selected pending Studio's native trust confirmation.
 
 ## Lease-expiry recovery checkpoint — 2026-10-17
 
