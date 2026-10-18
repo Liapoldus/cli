@@ -1,6 +1,28 @@
 # CLI — Studio configurator contract and runtime TODO
 
-## Bundle admission blockers and latest local runtime read — 2026-10-18
+## Local secret handoff checkpoint — 2026-10-19
+
+- The installed `/Users/docup/go/bin/liapoldus` is the approved Darwin/arm64
+  build from commit `d0191b8`, SHA-256
+  `1381dd4239795af2b64f9a1878d623eaa0de5c162d2d9895d32f018e010f00dd`; the
+  previous binary is backed up under
+  `/tmp/liapoldus-local-cli-backup-20261019-admission`. Its current typed
+  `runtime status` reports Core, Echo and Server running; Server and Echo are
+  ready at generation 96. `dev plan` is valid at digest
+  `sha256:c0ed4230629e8d35d3c725e6db1a8d44cfaa64c733351c4d3d62ddea8f2a2bac`.
+- The Project contains only `/echo`, with no auth reference. Typed
+  `service secret list` returns three revoked synthetic records and no active
+  records, pending registrations, or rotations. Although the user reported
+  saving a test credential, the current Studio form is empty and no new Core
+  reference is visible; creation remains unconfirmed. No secret value or
+  authenticated request has reached Server.
+- Re-ran the CLI owner gates: `make check` with `GOWORK=off GOFLAGS=-p=1` and
+  `LIAPOLDUS_CORE_OPENAPI` set to the current Core OpenAPI path, plus
+  `make test-race` with `GOWORK=off GOFLAGS=-p=1`; both pass. The remaining
+  local smoke starts after an active reference appears in the typed catalog;
+  preserve `/echo` and production remains out of scope.
+
+## Bundle admission blockers and latest local runtime read — superseded — 2026-10-18
 
 - CLI source now reads Core plan `blockedBy` codes and stops before local
   secret staging or writing a recovery intent when an apply is already blocked.
