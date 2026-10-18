@@ -160,12 +160,15 @@ JSON evidence с `repository`, exact `revision`, `target`, `approved: true`,
 
 `core start/stop/restart/status/logs` управляют Docker-контейнером
 `liapoldus-core`; host-процесс Core не запускается. `core stop` останавливает
-только Core, а `core restart` перезапускает только уже существующий и
-принадлежащий выбранному target контейнер Core. Эти команды не останавливают
-сервисы, не удаляют target network или runtime staging. Для остановки всего
-стека используется `runtime stop`. Core и runtime services подключаются к одной
-target network. Management API опубликован только на `127.0.0.1`, Service SDK
-control/peer endpoints доступны только внутри network.
+только Core и очищает plaintext из его private secret mount; каталог references
+и OS vault остаются. `core restart` перезапускает только уже запущенный и
+принадлежащий выбранному target контейнер Core. После остановки Core запускать
+сервисы и восстанавливать scoped secret mount следует через
+`runtime start --project <path> --revision WORKING_TREE --target local`. Эти
+команды не останавливают сервисы и не удаляют target network. Для остановки
+всего стека используется `runtime stop`. Core и runtime services подключаются к
+одной target network. Management API опубликован только на `127.0.0.1`, Service
+SDK control/peer endpoints доступны только внутри network.
 
 `core start` и `runtime start` сверяют SHA-256 настроенного Core-бинарника и
 runtime image с метками контейнера выбранного target. При изменении CLI

@@ -679,12 +679,15 @@ func (r Runner) coreDockerCommand(ctx context.Context, action string, target dom
 		}
 		return encode(stdout, map[string]any{"target": target.Name, "container": coreContainer, "stopped": stopped})
 	case "restart":
-		_, exists, err := r.inspectTargetCore(ctx, label)
+		container, exists, err := r.inspectTargetCore(ctx, label)
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
 		}
 		if !exists {
 			return fail(stderr, application.ExitTarget, "Core container is not present in the selected target; start it first")
+		}
+		if !container.State.Running && container.State.Status != "running" {
+			return fail(stderr, application.ExitTarget, "Core is stopped; use `runtime start --project <path> --revision WORKING_TREE --target local` to restore the selected Project's scoped service secrets")
 		}
 		if err := r.Docker.RestartContainer(ctx, coreContainer); err != nil {
 			return fail(stderr, application.ExitTarget, fmt.Sprintf("restart Core container: %v", err))

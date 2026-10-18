@@ -117,6 +117,23 @@ func TestCoreStartCreatesAndStoresTokenOnlyForFreshState(t *testing.T) {
 	}
 }
 
+func TestCoreRestartRequiresRuntimeStartWhenContainerIsStopped(t *testing.T) {
+	target, _ := dockerCoreTestTarget(t, true)
+	label := runtimeLabel("target", target.Name)
+	docker := &dockerRuntimeStub{
+		containers:  []string{coreContainer},
+		inspectBody: []byte(`[{"State":{"Status":"exited","Running":false},"Config":{"Image":"alpine:latest","Labels":{"com.liapoldus.runtime":"` + label + `"}}}]`),
+	}
+	runner := Runner{Registry: targetRegistryStub{target: target}, Docker: docker}
+	var output bytes.Buffer
+	if code := runner.Run([]string{"core", "restart", "--target", "local"}, &output, &output); code != application.ExitTarget || !strings.Contains(output.String(), "runtime start --project") {
+		t.Fatalf("stopped Core restart should direct callers through scoped runtime startup: code=%d output=%s", code, output.String())
+	}
+	if len(docker.restarted) != 0 {
+		t.Fatalf("Core was restarted without a selected Project secret scope: %v", docker.restarted)
+	}
+}
+
 func TestCoreStartDoesNotReplaceCredentialForExistingState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "core.sqlite")
 	if err := os.WriteFile(statePath, []byte("preserved-state"), 0o600); err != nil {

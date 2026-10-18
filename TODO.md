@@ -115,6 +115,9 @@
   and confirms it is pruned only after accepted configuration or retained after
   failed replica acknowledgement. Secret creation and failed registration
   tests assert that unselected values never reach the Core mount.
+- [x] Direct `core restart` now accepts only an already-running Core container;
+  after `core stop` cleans the private secret mount, callers must restart the
+  selected Project through `runtime start` so the scoped references are restored.
 - [x] `GOWORK=off make check` and `GOWORK=off make test-race` pass for this
   checkpoint. Live macOS/Core apply and replica-ACK verification still awaits
   the exact-digest native Studio trust flow and current Core runtime.
