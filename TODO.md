@@ -614,11 +614,16 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
   `df625da7910770c082db1364c0f9f0d149a15d487383af4a43e8aa8fb7607420` is
   running. `dev plan` for working-tree digest
   `c0ed4230629e8d35d3c725e6db1a8d44cfaa64c733351c4d3d62ddea8f2a2bac` is valid
-  at Echo/Server revision 95 and currently reports no `blockedBy` items. Echo
-  and Server containers remain exited; no configuration apply was attempted in
-  this diagnostic step. All three local synthetic Server test references remain
-  revoked; no test secret value is present in Project state or live routes.
-- Next: rebuild this CLI source into a fresh macOS/arm64 candidate for its exact
-  digest review, then continue the explicitly local integration test. Successful
-  protected-config apply, live service readiness, secret grant/ACK and rotation
-  acceptance are still unproven.
+  at Echo/Server revision 96 and reports no `blockedBy` items. After
+  `runtime start --revision WORKING_TREE`, both service containers are running
+  and report ready with desired/applied generation 96. Server 1.1.11 and Echo
+  1.2.2 acknowledge the exact Project settings digests; `GET /echo?text=local-smoke`
+  returns HTTP 200, and omitting required `text` returns HTTP 400.
+- The first `runtime start` attempt omitted the required `--revision` and failed
+  before runtime changes. Repeating with explicit `WORKING_TREE` reconciled the
+  stale containers and registered both replicas. The old HTTP 409 has not been
+  reproduced, but its exact historical cause remains unknown.
+- All three previous synthetic Server references remain revoked and the Project
+  still has no secret references. Studio's Server secret form is prepared with
+  a non-secret label; manual secure entry and submission are awaiting the user.
+  No successful live auth grant, rotation, or retirement ACK has been proven.
