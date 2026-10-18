@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -88,7 +89,9 @@ func (provider Provider) EnsureAvailable(ctx context.Context) (domain.DockerProv
 	}
 	start := provider.StartEngine
 	if start == nil {
-		start = startLocalEngine
+		start = func(ctx context.Context) error {
+			return startLocalEngine(ctx, provider.BinaryPath)
+		}
 	}
 	if err := start(ctx); err != nil {
 		return status, fmt.Errorf("docker engine start failed: %w", err)
@@ -112,11 +115,15 @@ func (provider Provider) EnsureAvailable(ctx context.Context) (domain.DockerProv
 	}
 }
 
-func startLocalEngine(ctx context.Context) error {
+func startLocalEngine(ctx context.Context, dockerBinary string) error {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.CommandContext(ctx, "open", "-a", "Docker")
+		application, err := selectedDarwinDockerApplication(ctx, dockerBinary)
+		if err != nil {
+			return err
+		}
+		command = exec.CommandContext(ctx, "open", "-a", application)
 	case "linux":
 		command = exec.CommandContext(ctx, "systemctl", "start", "docker")
 	case "windows":
@@ -133,6 +140,50 @@ func startLocalEngine(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func selectedDarwinDockerApplication(ctx context.Context, dockerBinary string) (string, error) {
+	if strings.TrimSpace(dockerBinary) == "" {
+		dockerBinary = "docker"
+	}
+	contextOutput, err := exec.CommandContext(ctx, dockerBinary, "context", "show").Output()
+	if err != nil {
+		return "", fmt.Errorf("inspect selected Docker context: %w", err)
+	}
+	contextName := strings.TrimSpace(string(contextOutput))
+	if contextName == "" {
+		return "", errors.New("selected Docker context is empty")
+	}
+	if strings.TrimSpace(os.Getenv("DOCKER_CONTEXT")) == "" {
+		if host := strings.TrimSpace(os.Getenv("DOCKER_HOST")); host != "" {
+			return selectDarwinDockerApplication(contextName, "", host, "")
+		}
+	}
+
+	endpointOutput, err := exec.CommandContext(ctx, dockerBinary, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}", contextName).Output()
+	if err != nil {
+		return "", fmt.Errorf("inspect selected Docker context endpoint: %w", err)
+	}
+	return selectDarwinDockerApplication(contextName, strings.TrimSpace(string(endpointOutput)), os.Getenv("DOCKER_HOST"), os.Getenv("DOCKER_CONTEXT"))
+}
+
+func selectDarwinDockerApplication(contextName, contextEndpoint, dockerHost, dockerContext string) (string, error) {
+	if strings.TrimSpace(dockerContext) == "" && strings.TrimSpace(dockerHost) != "" {
+		contextEndpoint = dockerHost
+	}
+	return darwinDockerApplication(contextName, contextEndpoint)
+}
+
+func darwinDockerApplication(contextName, endpoint string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(contextName))
+	host := strings.ToLower(strings.TrimSpace(endpoint))
+	if name == "orbstack" || strings.Contains(host, ".orbstack/run/docker.sock") {
+		return "OrbStack", nil
+	}
+	if name == "desktop-linux" || strings.Contains(host, ".docker/run/docker.sock") || host == "unix:///var/run/docker.sock" {
+		return "Docker", nil
+	}
+	return "", fmt.Errorf("automatic Docker Engine start cannot identify the app for context %q", contextName)
 }
 
 func (provider Provider) NetworkCreate(ctx context.Context, name, label string) error {

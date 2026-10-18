@@ -100,6 +100,56 @@ func TestEnsureAvailableDoesNotStartMissingDockerClient(t *testing.T) {
 	}
 }
 
+func TestDarwinDockerApplicationFollowsSelectedContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		context  string
+		endpoint string
+		want     string
+		wantErr  bool
+	}{
+		{name: "OrbStack context", context: "orbstack", endpoint: "unix:///Users/test/.orbstack/run/docker.sock", want: "OrbStack"},
+		{name: "OrbStack endpoint", context: "default", endpoint: "unix:///Users/test/.orbstack/run/docker.sock", want: "OrbStack"},
+		{name: "Docker Desktop context", context: "desktop-linux", endpoint: "unix:///Users/test/.docker/run/docker.sock", want: "Docker"},
+		{name: "Docker Desktop endpoint", context: "default", endpoint: "unix:///Users/test/.docker/run/docker.sock", want: "Docker"},
+		{name: "local Docker socket", context: "default", endpoint: "unix:///var/run/docker.sock", want: "Docker"},
+		{name: "unknown context", context: "remote", endpoint: "tcp://docker.example.test:2376", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := darwinDockerApplication(test.context, test.endpoint)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error=%v wantErr=%t", err, test.wantErr)
+			}
+			if got != test.want {
+				t.Fatalf("application=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDockerEnvironmentHonorsContextOverHostOverride(t *testing.T) {
+	tests := []struct {
+		name          string
+		contextName   string
+		contextHost   string
+		dockerHost    string
+		dockerContext string
+		want          string
+	}{
+		{name: "DOCKER_HOST overrides default context", contextName: "default", contextHost: "unix:///var/run/docker.sock", dockerHost: "unix:///Users/test/.orbstack/run/docker.sock", want: "OrbStack"},
+		{name: "DOCKER_CONTEXT overrides DOCKER_HOST", contextName: "orbstack", contextHost: "unix:///Users/test/.orbstack/run/docker.sock", dockerHost: "unix:///Users/test/.docker/run/docker.sock", dockerContext: "orbstack", want: "OrbStack"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := selectDarwinDockerApplication(test.contextName, test.contextHost, test.dockerHost, test.dockerContext)
+			if err != nil || got != test.want {
+				t.Fatalf("application=%q error=%v want=%q", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestRunContainerDoesNotBuildAndUsesReadOnlyStaging(t *testing.T) {
 	var got []string
 	provider := Provider{BinaryPath: "docker", Execute: func(_ context.Context, args []string) ([]byte, error) {
