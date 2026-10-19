@@ -95,7 +95,7 @@ func (artifact Artifact) Validate() error {
 	if !isSHA256(artifact.Digest) {
 		return errors.New("artifact digest must be a sha256 digest")
 	}
-	if filepath.IsAbs(artifact.Path) == false || strings.ContainsRune(artifact.Path, '\x00') {
+	if !filepath.IsAbs(artifact.Path) || strings.ContainsRune(artifact.Path, '\x00') {
 		return errors.New("artifact path must be absolute")
 	}
 	if artifact.Command != "" && (strings.ContainsAny(artifact.Command, "/\\") || strings.ContainsRune(artifact.Command, '\x00')) {

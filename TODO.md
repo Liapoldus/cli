@@ -683,3 +683,18 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
 - Повторный typed lifecycle suite прошёл:
   `GOWORK=off GOFLAGS=-p=1 go test ./internal/presentation/cli -run
   'TestServiceSecret(Create|Rotate|Revoke)' -count=1`.
+
+### Hosted CI contract and quality follow-up — 2026-10-19
+
+- Reproduced the hosted CLI quality failure with the same Staticcheck `v0.7.0`:
+  corrected error-string capitalization and path checks, removed unused process
+  helpers and an unused result wrapper, and applied the suggested `bytes.Buffer`
+  accessors. `staticcheck ./...`, `make check`, and `make test-race` now pass.
+- The hosted `core-contract` job was pinned to Core `f99fba3`, whose OpenAPI
+  document predates the current service Admin Surface, links, and secret APIs.
+  Its contract test failed on those missing paths. Both CLI jobs now pin Core
+  `9cd24ec23f420c35f44a3ccbef50703a61a26897`; the smoke workspace also pins
+  Service SDK `2cbc9b7df7eabfe6209df95e48f10fed5365fd2a`.
+- `go test ./internal/infrastructure/coreapi` passes against the current Core
+  OpenAPI file. The updated hosted Core lifecycle smoke is still pending its
+  GitHub Actions run.

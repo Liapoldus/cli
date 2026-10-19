@@ -280,10 +280,10 @@ func (r Runner) createServiceSecretValue(ctx context.Context, target domain.Targ
 		Reference: reference, ServiceID: options.service, Purpose: options.purpose, Label: options.label, State: "active",
 	})
 	if err != nil {
-		return domain.ServiceSecretReference{}, errors.New("Core metadata registration failed; reference and value remain staged for retry")
+		return domain.ServiceSecretReference{}, errors.New("core metadata registration failed; reference and value remain staged for retry")
 	}
 	if created.Reference != reference || created.ServiceID != options.service || created.Purpose != options.purpose || created.State != "active" {
-		return domain.ServiceSecretReference{}, errors.New("Core returned mismatched metadata; reference and value remain staged for review")
+		return domain.ServiceSecretReference{}, errors.New("core returned mismatched metadata; reference and value remain staged for review")
 	}
 	return created, nil
 }
@@ -512,10 +512,10 @@ func serviceSecretRoot(target domain.Target) (string, error) {
 	}
 	statePath, err := filepath.Abs(target.StatePath)
 	if err != nil || statePath == filepath.VolumeName(statePath)+string(filepath.Separator) {
-		return "", errors.New("Core state path is invalid")
+		return "", errors.New("core state path is invalid")
 	}
 	if info, err := os.Lstat(statePath); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
-		return "", errors.New("Core state file is not a regular file")
+		return "", errors.New("core state file is not a regular file")
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -832,16 +832,16 @@ func projectServiceSecretReferences(services []domain.Service) ([]stagedServiceS
 		}
 		var settings any
 		if err := json.Unmarshal(service.Settings, &settings); err != nil {
-			return nil, errors.New("Project service settings could not be inspected for secret references")
+			return nil, errors.New("project service settings could not be inspected for secret references")
 		}
 		values := make([]string, 0)
 		collectProjectSecretReferences(settings, &values)
 		for _, reference := range values {
 			if !validServiceSecretReference(reference) {
-				return nil, errors.New("Project contains an invalid opaque service-secret reference")
+				return nil, errors.New("project contains an invalid opaque service-secret reference")
 			}
 			if previous, found := byReference[reference]; found && previous.ServiceID != service.ID {
-				return nil, errors.New("Project assigns one service-secret reference to multiple services")
+				return nil, errors.New("project assigns one service-secret reference to multiple services")
 			}
 			byReference[reference] = stagedServiceSecretReference{Reference: reference, ServiceID: service.ID}
 		}

@@ -97,7 +97,7 @@ func (runner Runner) serviceAdmin(ctx context.Context, args []string, stdout, st
 		} else if options.cursor == "" {
 			response, err = client.ServiceAdminQuery(ctx, args[1], options.page, resourceID)
 		} else {
-			err = errors.New("Core client does not support table pagination")
+			err = errors.New("core client does not support table pagination")
 		}
 		if err != nil {
 			return fail(stderr, application.ExitTarget, err.Error())
@@ -120,11 +120,11 @@ func readServiceAdminDescriptor(ctx context.Context, reader domain.ServiceAdminS
 		return domain.ServiceAdminSurface{}, serviceAdminDescriptor{}, err
 	}
 	if !validServiceAdminSurface(surface.Descriptor) || !validServiceAdminSurfaceDigest(surface.Digest, surface.Descriptor) {
-		return domain.ServiceAdminSurface{}, serviceAdminDescriptor{}, errors.New("Core returned an invalid service admin-surface descriptor")
+		return domain.ServiceAdminSurface{}, serviceAdminDescriptor{}, errors.New("core returned an invalid service admin-surface descriptor")
 	}
 	var descriptor serviceAdminDescriptor
 	if json.Unmarshal(surface.Descriptor, &descriptor) != nil || descriptor.Service != serviceID || descriptor.Version != 1 {
-		return domain.ServiceAdminSurface{}, serviceAdminDescriptor{}, errors.New("Core returned an invalid service admin-surface descriptor")
+		return domain.ServiceAdminSurface{}, serviceAdminDescriptor{}, errors.New("core returned an invalid service admin-surface descriptor")
 	}
 	return surface, descriptor, nil
 }

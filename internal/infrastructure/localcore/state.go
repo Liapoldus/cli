@@ -15,7 +15,7 @@ type StateFiles struct{}
 
 func (StateFiles) Backup(target domain.Target, output string) error {
 	if target.Transport != domain.TransportLocalProcess {
-		return errors.New("Core state backup requires a Docker runtime target")
+		return errors.New("core state backup requires a Docker runtime target")
 	}
 	if target.StatePath == "" || !filepath.IsAbs(target.StatePath) {
 		return errors.New("target does not declare an absolute Core state path")
@@ -30,7 +30,7 @@ func (StateFiles) Backup(target domain.Target, output string) error {
 
 func (StateFiles) Restore(target domain.Target, input string) error {
 	if target.Transport != domain.TransportLocalProcess {
-		return errors.New("Core state restore requires a Docker runtime target")
+		return errors.New("core state restore requires a Docker runtime target")
 	}
 	if target.StatePath == "" || !filepath.IsAbs(target.StatePath) {
 		return errors.New("target does not declare an absolute Core state path")

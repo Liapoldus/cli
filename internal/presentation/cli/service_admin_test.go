@@ -83,7 +83,7 @@ func TestServiceAdminActionUsesProjectInputAndHidesServiceResult(t *testing.T) {
 	code := runner.Run([]string{"service", "admin", "invoke", "server", "--page", "sites", "--section", "sites", "--action", "rollback",
 		"--project", project, "--request-file", "action.json", "--surface-digest", core.adminSurfaceCoreClient.surface.Digest,
 		"--if-match", "r-2", "--idempotency-key", "action-1", "--target", "local", "--confirm"}, &stdout, &stderr)
-	if code != application.ExitOK || string(stdout.Bytes()) != "{\"completed\":true}\n" {
+	if code != application.ExitOK || stdout.String() != "{\"completed\":true}\n" {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	if core.action.ServiceID != "server" || core.action.PageID != "sites" || core.action.SectionID != "sites" || core.action.ActionID != "rollback" ||

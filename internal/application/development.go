@@ -132,7 +132,7 @@ func (s DevelopmentDeploymentService) Apply(ctx context.Context, projectPath, ta
 	applyResult := DevelopmentApplyResult{CoreResponse: result.Raw}
 	if len(result.OperationIDs) == 0 {
 		if err := s.Secrets.Finalize(ctx, bundle.Services); err != nil {
-			return bundle, applyResult, fmt.Errorf("Core accepted the Project configuration, but local service-secret cleanup failed: %w", err)
+			return bundle, applyResult, fmt.Errorf("core accepted the project configuration, but local service-secret cleanup failed: %w", err)
 		}
 		if err := s.Recovery.Clear(s.RecoveryTargetKey); err != nil {
 			return domain.Bundle{}, DevelopmentApplyResult{}, fmt.Errorf("clear empty apply recovery intent: %w", err)
@@ -145,7 +145,7 @@ func (s DevelopmentDeploymentService) Apply(ctx context.Context, projectPath, ta
 		}
 		if len(result.OperationIDs) > 0 {
 			if err := s.Secrets.Finalize(ctx, bundle.Services); err != nil {
-				return bundle, applyResult, fmt.Errorf("Core applied the Project configuration, but local service-secret cleanup failed: %w", err)
+				return bundle, applyResult, fmt.Errorf("core applied the project configuration, but local service-secret cleanup failed: %w", err)
 			}
 			if err := s.Recovery.Clear(s.RecoveryTargetKey); err != nil {
 				return bundle, applyResult, fmt.Errorf("clear completed apply recovery intent: %w", err)
@@ -221,10 +221,10 @@ func developmentIdempotencyKey(request domain.ConfigBundleRequest, bundle domain
 		return "", fmt.Errorf("decode Core plan: %w", err)
 	}
 	if !response.Plan.Valid || response.Plan.Digest != bundle.Digest {
-		return "", errors.New("Core plan does not match the requested bundle")
+		return "", errors.New("core plan does not match the requested bundle")
 	}
 	if len(response.Plan.Services) != len(request.Bundle.Services) {
-		return "", errors.New("Core plan service revisions do not match the requested bundle")
+		return "", errors.New("core plan service revisions do not match the requested bundle")
 	}
 	services := append([]struct {
 		ID              string   `json:"id"`
@@ -244,13 +244,13 @@ func developmentIdempotencyKey(request domain.ConfigBundleRequest, bundle domain
 	}
 	for index, service := range services {
 		if service.ID == "" || service.ID != expectedIDs[index] || (index > 0 && services[index-1].ID == service.ID) {
-			return "", errors.New("Core plan service revisions do not match the requested bundle")
+			return "", errors.New("core plan service revisions do not match the requested bundle")
 		}
 		if len(service.BlockedBy) > 0 {
 			if !safeDevelopmentBlocker(service.BlockedBy[0]) {
-				return "", fmt.Errorf("Core plan reports an unknown configuration blocker for service %s", service.ID)
+				return "", fmt.Errorf("core plan reports an unknown configuration blocker for service %s", service.ID)
 			}
-			return "", fmt.Errorf("Core cannot apply service %s yet: %s", service.ID, service.BlockedBy[0])
+			return "", fmt.Errorf("core cannot apply service %s yet: %s", service.ID, service.BlockedBy[0])
 		}
 		identity += fmt.Sprintf("\x00%s\x00%d", service.ID, service.CurrentRevision)
 	}
@@ -317,7 +317,7 @@ func (s DevelopmentDeploymentService) wait(ctx context.Context, response domain.
 	for _, operationID := range response.OperationIDs {
 		operation, err := (OperationService{Core: s.Core}).WatchObserved(ctx, operationID, 250*time.Millisecond, 60*time.Second, s.OnOperationState)
 		if len(operation.ReplicaOutcomes) > 128-len(outcomes) {
-			return outcomes, errors.New("Core returned too many replica outcomes for one apply result")
+			return outcomes, errors.New("core returned too many replica outcomes for one apply result")
 		}
 		outcomes = append(outcomes, operation.ReplicaOutcomes...)
 		if err != nil {

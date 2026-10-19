@@ -146,7 +146,7 @@ func TestCoreStartDoesNotReplaceCredentialForExistingState(t *testing.T) {
 	runner := Runner{Registry: targetRegistryStub{target: target}, Credentials: vault, CredentialVault: vault, Docker: docker,
 		CoreFactory: func(domain.CoreConnection) (domain.CoreClient, error) { return healthyCoreClient{}, nil }}
 	var output bytes.Buffer
-	if code := runner.Run([]string{"core", "start", "--target", "local"}, &output, &output); code == application.ExitOK || !strings.Contains(output.String(), "Core management credential is unavailable") {
+	if code := runner.Run([]string{"core", "start", "--target", "local"}, &output, &output); code == application.ExitOK || !strings.Contains(output.String(), "core management credential is unavailable") {
 		t.Fatalf("existing state was started without its token: code=%d output=%s", code, output.String())
 	}
 	if docker.runCount != 0 || len(docker.stopped) != 0 || len(docker.removed) != 0 {

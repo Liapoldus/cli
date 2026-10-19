@@ -233,7 +233,7 @@ func TestServiceResourcePublishUsesTypedCoreClientAndProjectScopedFiles(t *testi
 	if code != application.ExitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if string(stdout.Bytes()) != "{\"operationId\":\"publish-1\",\"state\":\"pending\"}\n" || core.publication.ServiceID != "server" || core.publication.PageID != "sites" || core.publication.ActionID != "publish" || string(core.publication.Metadata) != `{"siteId":"docs"}` || core.publication.ContentType != "application/gzip" {
+	if stdout.String() != "{\"operationId\":\"publish-1\",\"state\":\"pending\"}\n" || core.publication.ServiceID != "server" || core.publication.PageID != "sites" || core.publication.ActionID != "publish" || string(core.publication.Metadata) != `{"siteId":"docs"}` || core.publication.ContentType != "application/gzip" {
 		t.Fatalf("unexpected CLI publish result/request: stdout=%s publication=%+v", stdout.String(), core.publication)
 	}
 	if strings.Contains(stdout.String(), project) || strings.Contains(stdout.String(), "archive-bytes") || strings.Contains(stderr.String(), "not-returned") {

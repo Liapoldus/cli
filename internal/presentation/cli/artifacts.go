@@ -674,11 +674,11 @@ func parseRuntimeContainerState(body []byte, expectedName string) (dockerCoreSta
 		State dockerCoreState `json:"State"`
 	}
 	if err := json.Unmarshal(body, &records); err != nil || len(records) != 1 || strings.TrimPrefix(records[0].Name, "/") != expectedName {
-		return dockerCoreState{}, errors.New("Docker runtime returned an invalid container state")
+		return dockerCoreState{}, errors.New("docker runtime returned an invalid container state")
 	}
 	state := records[0].State
 	if strings.TrimSpace(state.Status) == "" || state.Running && state.Status != "running" {
-		return dockerCoreState{}, errors.New("Docker runtime returned an invalid container state")
+		return dockerCoreState{}, errors.New("docker runtime returned an invalid container state")
 	}
 	return state, nil
 }
@@ -852,7 +852,7 @@ func serviceArtifactFromContainer(inspect []byte, container, targetLabel string,
 		} `json:"State"`
 	}
 	if err := json.Unmarshal(inspect, &records); err != nil || len(records) != 1 {
-		return domain.Artifact{}, errors.New("Docker inspect response is invalid")
+		return domain.Artifact{}, errors.New("docker inspect response is invalid")
 	}
 	record := records[0]
 	if strings.TrimPrefix(record.Name, "/") != container || record.Config.Labels["com.liapoldus.runtime"] != targetLabel || (record.State.Status != "running" && record.State.Status != "exited" && record.State.Status != "created" && record.State.Status != "dead") {
@@ -897,7 +897,7 @@ func serviceArtifactFromContainer(inspect []byte, container, targetLabel string,
 
 func (r Runner) runtimeCoreClient(ctx context.Context, options commandOptions) (domain.CoreClient, error) {
 	if r.CoreFactory == nil {
-		return nil, errors.New("Core client is not configured")
+		return nil, errors.New("core client is not configured")
 	}
 	connection, err := r.credentials(ctx, options)
 	if err != nil {
@@ -918,10 +918,10 @@ func serviceArtifactFromStatus(body json.RawMessage, expectedServiceID string) (
 		ArtifactDigest  string `json:"artifactDigest"`
 	}
 	if !json.Valid(body) || json.Unmarshal(body, &status) != nil || status.InstanceID != expectedServiceID || status.ArtifactID != expectedServiceID || strings.TrimSpace(status.ArtifactVersion) == "" {
-		return "", "", errors.New("Core returned an invalid service artifact status contract")
+		return "", "", errors.New("core returned an invalid service artifact status contract")
 	}
 	if !validArtifactDigest(status.ArtifactDigest) {
-		return "", "", errors.New("Core returned an invalid service artifact digest")
+		return "", "", errors.New("core returned an invalid service artifact digest")
 	}
 	return status.ArtifactVersion, status.ArtifactDigest, nil
 }
@@ -1020,11 +1020,11 @@ func (r Runner) replaceStoppedRuntimeService(ctx context.Context, serviceID, con
 	}
 	if _, err := registerRuntimeService(ctx, client, metadata, 60*time.Second); err != nil {
 		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
-		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("Core registration for desired artifact: %w", err), stderr)
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("core registration for desired artifact: %w", err), stderr)
 	}
 	if err := r.waitForCoreServiceReady(ctx, options, serviceID); err != nil {
 		emitRuntimeStartupLogs(ctx, stderr, r.Docker, []string{container})
-		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("Core readiness for desired artifact: %w", err), stderr)
+		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("core readiness for desired artifact: %w", err), stderr)
 	}
 	confirmed, err := client.ServiceMetadata(ctx, serviceID, "status")
 	if err != nil {
@@ -1033,7 +1033,7 @@ func (r Runner) replaceStoppedRuntimeService(ctx context.Context, serviceID, con
 	version, digest, err := serviceArtifactFromStatus(confirmed, serviceID)
 	if err != nil || version != desired.Artifact.Version || digest != desired.Artifact.Digest {
 		if err == nil {
-			err = errors.New("Core still reports a different live artifact")
+			err = errors.New("core still reports a different live artifact")
 		}
 		return r.rollbackRuntimeService(ctx, serviceID, container, label, options, oldRequest, client, serviceRegistrationMetadata(previousService), fmt.Errorf("verify desired Core artifact provenance: %w", err), stderr)
 	}
@@ -1069,7 +1069,7 @@ func (r Runner) rollbackRuntimeService(ctx context.Context, serviceID, container
 	version, digest, err := serviceArtifactFromStatus(status, serviceID)
 	if err != nil || version != previousMetadata.ArtifactVersion || digest != previousMetadata.Digest {
 		if err == nil {
-			err = errors.New("Core reports a different artifact after rollback")
+			err = errors.New("core reports a different artifact after rollback")
 		}
 		return fail(stderr, application.ExitTarget, fmt.Sprintf("service artifact update failed (%v); previous container is ready but Core provenance does not match rollback: %v", cause, err))
 	}
@@ -1078,7 +1078,7 @@ func (r Runner) rollbackRuntimeService(ctx context.Context, serviceID, container
 
 func (r Runner) waitForCoreServiceReady(ctx context.Context, options commandOptions, serviceID string) error {
 	if r.CoreFactory == nil {
-		return errors.New("Core client is not configured")
+		return errors.New("core client is not configured")
 	}
 	connection, err := r.credentials(ctx, options)
 	if err != nil {
@@ -1106,7 +1106,7 @@ func (r Runner) waitForCoreServiceReady(ctx context.Context, options commandOpti
 			if ready {
 				return nil
 			}
-			lastErr = errors.New("Core reports that one or more replicas are not ready")
+			lastErr = errors.New("core reports that one or more replicas are not ready")
 		} else {
 			var responseError domain.CoreHTTPError
 			if errors.As(statusErr, &responseError) && responseError.Status < 500 {
@@ -1134,12 +1134,12 @@ func serviceStatusReady(body json.RawMessage, expectedServiceID, expectedReplica
 		} `json:"replicas"`
 	}
 	if !json.Valid(body) || json.Unmarshal(body, &status) != nil || status.InstanceID != expectedServiceID || len(status.Replicas) == 0 {
-		return false, errors.New("Core returned an invalid service status contract")
+		return false, errors.New("core returned an invalid service status contract")
 	}
 	foundExpectedReplica := false
 	for _, replica := range status.Replicas {
 		if replica.ReplicaID == "" || replica.Ready == nil {
-			return false, errors.New("Core returned an incomplete replica readiness contract")
+			return false, errors.New("core returned an incomplete replica readiness contract")
 		}
 		if replica.ReplicaID == expectedReplicaID {
 			foundExpectedReplica = true
@@ -1231,7 +1231,7 @@ func runtimeIdempotencyKey(label, digest string) (string, error) {
 
 func registerRuntimeService(ctx context.Context, client domain.CoreClient, metadata domain.ServiceRegistrationMetadata, timeout time.Duration) (json.RawMessage, error) {
 	if ctx == nil || client == nil || strings.TrimSpace(metadata.InstanceID) == "" || timeout <= 0 {
-		return nil, errors.New("Core client, service identity and timeout are required")
+		return nil, errors.New("core client, service identity and timeout are required")
 	}
 	waitContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

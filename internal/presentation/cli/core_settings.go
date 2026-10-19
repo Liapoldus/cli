@@ -137,26 +137,26 @@ func (r Runner) coreSettings(ctx context.Context, args []string, stdout, stderr 
 
 func readCoreSettingsPatch(path string) (domain.CoreSettingsPatch, error) {
 	if !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
-		return domain.CoreSettingsPatch{}, errors.New("Core settings request file must be an absolute local file")
+		return domain.CoreSettingsPatch{}, errors.New("core settings request file must be an absolute local file")
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() < 1 || info.Size() > 32768 {
-		return domain.CoreSettingsPatch{}, errors.New("Core settings request file is missing, linked, or outside the size limit")
+		return domain.CoreSettingsPatch{}, errors.New("core settings request file is missing, linked, or outside the size limit")
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return domain.CoreSettingsPatch{}, errors.New("Core settings request file cannot be read")
+		return domain.CoreSettingsPatch{}, errors.New("core settings request file cannot be read")
 	}
 	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, 32769))
 	if err != nil || len(raw) > 32768 {
-		return domain.CoreSettingsPatch{}, errors.New("Core settings request exceeds the size limit")
+		return domain.CoreSettingsPatch{}, errors.New("core settings request exceeds the size limit")
 	}
 	var patch domain.CoreSettingsPatch
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&patch) != nil || decoder.Decode(new(any)) != io.EOF || patch.SchemaVersion != "core-settings-patch/v1" || patch.ExpectedRevision < 1 || !hasCoreSettingsPatch(patch) {
-		return domain.CoreSettingsPatch{}, errors.New("Core settings request does not match core-settings-patch/v1")
+		return domain.CoreSettingsPatch{}, errors.New("core settings request does not match core-settings-patch/v1")
 	}
 	if patch.Management.MaxBodyBytes != nil && (*patch.Management.MaxBodyBytes < 1 || *patch.Management.MaxBodyBytes > 16<<20) {
 		return domain.CoreSettingsPatch{}, errors.New("management.maxBodyBytes is outside the supported range")
@@ -164,7 +164,7 @@ func readCoreSettingsPatch(path string) (domain.CoreSettingsPatch, error) {
 	for _, value := range []*string{patch.Management.Listen, patch.Management.HeaderTimeout, patch.Management.RequestTimeout,
 		patch.ServiceControl.Listen, patch.ServiceControl.PublicURL} {
 		if value != nil && (strings.TrimSpace(*value) == "" || strings.ContainsAny(*value, "\x00\r\n")) {
-			return domain.CoreSettingsPatch{}, errors.New("Core settings patch contains an empty or unsafe value")
+			return domain.CoreSettingsPatch{}, errors.New("core settings patch contains an empty or unsafe value")
 		}
 	}
 	return patch, nil
@@ -221,7 +221,7 @@ func coreSettingsErrorCode(err error) int {
 
 func projectCoreSettings(target domain.Target, snapshot domain.CoreSettingsSnapshot) (map[string]any, error) {
 	if !safeTargetReferenceID.MatchString(target.Name) || len(snapshot.Settings) == 0 {
-		return nil, errors.New("Core settings view cannot be safely scoped to this target")
+		return nil, errors.New("core settings view cannot be safely scoped to this target")
 	}
 	var settings coreSettingsDocument
 	decoder := json.NewDecoder(strings.NewReader(string(snapshot.Settings)))

@@ -272,7 +272,7 @@ func (provider Provider) RunContainer(ctx context.Context, request domain.Docker
 		}
 		address := net.ParseIP(port.HostIP)
 		if address == nil || !address.IsLoopback() {
-			return errors.New("Docker runtime ports must be published to an explicit loopback address")
+			return errors.New("docker runtime ports must be published to an explicit loopback address")
 		}
 		hostIP := port.HostIP
 		if strings.Contains(hostIP, ":") {

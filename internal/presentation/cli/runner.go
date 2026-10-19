@@ -644,11 +644,11 @@ func inspectCoreBinary(path string) (string, string, int64, error) {
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
-		return "", "", 0, errors.New("Core binary must be an existing executable regular file")
+		return "", "", 0, errors.New("core binary must be an existing executable regular file")
 	}
 	file, err := elf.Open(path)
 	if err != nil {
-		return "", "", 0, errors.New("Core binary must be a Linux ELF executable")
+		return "", "", 0, errors.New("core binary must be a Linux ELF executable")
 	}
 	defer file.Close()
 	platform := ""
@@ -658,23 +658,16 @@ func inspectCoreBinary(path string) (string, string, int64, error) {
 	case elf.EM_AARCH64:
 		platform = "linux/arm64"
 	default:
-		return "", "", 0, errors.New("Core binary architecture is unsupported")
+		return "", "", 0, errors.New("core binary architecture is unsupported")
 	}
 	if file.Class != elf.ELFCLASS64 || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
-		return "", "", 0, errors.New("Core binary must be a 64-bit Linux executable")
+		return "", "", 0, errors.New("core binary must be a 64-bit Linux executable")
 	}
 	digest, err := digestFile(path)
 	if err != nil {
-		return "", "", 0, errors.New("Core binary digest could not be calculated")
+		return "", "", 0, errors.New("core binary digest could not be calculated")
 	}
 	return platform, digest, info.Size(), nil
-}
-
-func (r Runner) localResult(value any, err error, stdout, stderr io.Writer) int {
-	if err != nil {
-		return fail(stderr, application.ExitTarget, err.Error())
-	}
-	return encode(stdout, value)
 }
 
 func (r Runner) inspect(ctx context.Context, args []string, stdout, stderr io.Writer) int {

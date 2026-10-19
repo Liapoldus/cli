@@ -45,14 +45,14 @@ type dockerCoreStartResult struct {
 func parseDockerCoreState(body []byte) (dockerCoreState, error) {
 	var containers []dockerInspectContainer
 	if err := json.Unmarshal(body, &containers); err != nil {
-		return dockerCoreState{}, errors.New("Core container returned invalid status")
+		return dockerCoreState{}, errors.New("core container returned invalid status")
 	}
 	if len(containers) != 1 {
-		return dockerCoreState{}, errors.New("Core container returned invalid status")
+		return dockerCoreState{}, errors.New("core container returned invalid status")
 	}
 	state := containers[0].State
 	if strings.TrimSpace(state.Status) == "" || (state.Running && state.Status != "running") {
-		return dockerCoreState{}, errors.New("Core container returned invalid status")
+		return dockerCoreState{}, errors.New("core container returned invalid status")
 	}
 	return state, nil
 }
@@ -60,10 +60,10 @@ func parseDockerCoreState(body []byte) (dockerCoreState, error) {
 func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label string, services []domain.Service) (dockerCoreStartResult, error) {
 	result := dockerCoreStartResult{}
 	if target.Transport != domain.TransportLocalProcess {
-		return result, errors.New("Docker Core lifecycle requires a local-process target")
+		return result, errors.New("docker Core lifecycle requires a local-process target")
 	}
 	if r.Docker == nil || r.CoreFactory == nil {
-		return result, errors.New("Docker Core runtime is not configured")
+		return result, errors.New("docker Core runtime is not configured")
 	}
 	provider, engineErr := ensureDockerProvider(ctx, r.Docker)
 	if engineErr != nil {
@@ -79,27 +79,27 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 		return result, errors.New("runtime_image_missing")
 	}
 	if strings.TrimSpace(target.CoreBinary) == "" {
-		return result, errors.New("Core binary is not configured")
+		return result, errors.New("core binary is not configured")
 	}
 	if !filepath.IsAbs(target.StatePath) {
-		return result, errors.New("Core state path must be absolute")
+		return result, errors.New("core state path must be absolute")
 	}
 	if target.RuntimePlatform != "linux/amd64" && target.RuntimePlatform != "linux/arm64" {
 		return result, domain.ErrArtifactPlatformMismatch
 	}
 	if target.Endpoint == "" {
-		return result, errors.New("Core Management endpoint is not configured")
+		return result, errors.New("core Management endpoint is not configured")
 	}
 	if err := os.MkdirAll(filepath.Dir(target.StatePath), 0o700); err != nil {
-		return result, errors.New("Core state directory is unavailable")
+		return result, errors.New("core state directory is unavailable")
 	}
 	stateInfo, stateErr := os.Lstat(target.StatePath)
 	newState := errors.Is(stateErr, os.ErrNotExist)
 	if stateErr != nil && !newState {
-		return result, errors.New("Core state path cannot be inspected")
+		return result, errors.New("core state path cannot be inspected")
 	}
 	if !newState && !stateInfo.Mode().IsRegular() {
-		return result, errors.New("Core state path must be a regular file")
+		return result, errors.New("core state path must be a regular file")
 	}
 	info, err := os.Stat(target.CoreBinary)
 	if err != nil || !info.Mode().IsRegular() {
@@ -161,12 +161,12 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 			return result, inspectErr
 		}
 		if inspected.Config.Labels["com.liapoldus.runtime"] != label {
-			return result, errors.New("Core container is not owned by the selected target")
+			return result, errors.New("core container is not owned by the selected target")
 		}
 		if state.Running || state.Status == "running" {
 			if inspected.Config.Image == target.RuntimeImage && inspected.Config.Labels["com.liapoldus.core.binary.sha256"] == binaryDigest {
 				if err := r.waitDockerCore(ctx, target, 3*time.Second); err != nil {
-					return result, fmt.Errorf("Core container is running but Management API is unavailable: %w", err)
+					return result, fmt.Errorf("core container is running but Management API is unavailable: %w", err)
 				}
 				return result, nil
 			}
@@ -194,9 +194,9 @@ func (r Runner) startDockerCore(ctx context.Context, target domain.Target, label
 			logs = logs[len(logs)-4000:]
 		}
 		if len(logs) > 0 {
-			return result, fmt.Errorf("Core Management API did not become ready: %w; bounded Core output: %s", err, strings.TrimSpace(string(logs)))
+			return result, fmt.Errorf("core Management API did not become ready: %w; bounded Core output: %s", err, strings.TrimSpace(string(logs)))
 		}
-		return result, fmt.Errorf("Core Management API did not become ready: %w", err)
+		return result, fmt.Errorf("core Management API did not become ready: %w", err)
 	}
 	result.Created = true
 	return result, nil
@@ -265,7 +265,7 @@ func dockerErrorReferencesMountSource(message, source string) bool {
 func parseDockerCoreInspect(body []byte) (dockerInspectContainer, error) {
 	var containers []dockerInspectContainer
 	if err := json.Unmarshal(body, &containers); err != nil || len(containers) != 1 {
-		return dockerInspectContainer{}, errors.New("Core container returned invalid status")
+		return dockerInspectContainer{}, errors.New("core container returned invalid status")
 	}
 	return containers[0], nil
 }
@@ -283,7 +283,7 @@ func (r Runner) bootstrapManagementCredential(ctx context.Context, target domain
 		return token, nil
 	}
 	if !newState || !errors.Is(err, domain.ErrCredentialNotFound) {
-		return "", fmt.Errorf("Core management credential is unavailable: %w", err)
+		return "", fmt.Errorf("core management credential is unavailable: %w", err)
 	}
 	vault := r.credentialVault()
 	if vault == nil {
@@ -339,27 +339,27 @@ func writeBootstrapToken(token, parentDirectory string) (string, error) {
 func coreContainerRequest(target domain.Target, label, network, stagedCore, tokenDirectory string) (domain.DockerContainerRequest, error) {
 	managementPort, err := endpointPort(target.Endpoint)
 	if err != nil {
-		return domain.DockerContainerRequest{}, errors.New("Core Management endpoint must use a local TCP port")
+		return domain.DockerContainerRequest{}, errors.New("core Management endpoint must use a local TCP port")
 	}
 	if !isLoopbackURL(target.Endpoint) {
-		return domain.DockerContainerRequest{}, errors.New("Docker Core Management endpoint must be loopback-only")
+		return domain.DockerContainerRequest{}, errors.New("docker Core Management endpoint must be loopback-only")
 	}
 	managementListen := listenOnAllInterfaces(target.Bootstrap.ManagementListen, managementPort)
 	controlPort, err := listenPort(target.Bootstrap.ControlListen, 18181)
 	if err != nil {
-		return domain.DockerContainerRequest{}, errors.New("Core service-control listen port is invalid")
+		return domain.DockerContainerRequest{}, errors.New("core service-control listen port is invalid")
 	}
 	if _, err := os.Stat(target.Bootstrap.ManagementCertificate); err != nil {
-		return domain.DockerContainerRequest{}, errors.New("Core Management TLS certificate is unavailable")
+		return domain.DockerContainerRequest{}, errors.New("core Management TLS certificate is unavailable")
 	}
 	mounts := make([]domain.DockerMount, 0, 8)
 	addMount := func(source, destination string, readOnly bool) error {
 		if source == "" {
-			return errors.New("Core TLS reference is missing")
+			return errors.New("core TLS reference is missing")
 		}
 		info, err := os.Stat(source)
 		if err != nil || !info.Mode().IsRegular() {
-			return errors.New("Core TLS asset is unavailable")
+			return errors.New("core TLS asset is unavailable")
 		}
 		mounts = append(mounts, domain.DockerMount{Source: source, Target: destination, ReadOnly: readOnly})
 		return nil
@@ -389,7 +389,7 @@ func coreContainerRequest(target domain.Target, label, network, stagedCore, toke
 	if tokenDirectory != "" {
 		relativeTokenDirectory, err := filepath.Rel(stateDirectory, tokenDirectory)
 		if err != nil || relativeTokenDirectory == "." || relativeTokenDirectory == ".." || strings.HasPrefix(relativeTokenDirectory, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeTokenDirectory) {
-			return domain.DockerContainerRequest{}, errors.New("Core bootstrap credential must be inside the mounted state directory")
+			return domain.DockerContainerRequest{}, errors.New("core bootstrap credential must be inside the mounted state directory")
 		}
 		environment["CORE_INIT_MANAGEMENT_TOKEN_FILE"] = "/var/lib/liapoldus/" + filepath.ToSlash(filepath.Join(relativeTokenDirectory, "management-token"))
 		environment["CORE_INIT_MANAGEMENT_LISTEN"] = managementListen
@@ -415,7 +415,7 @@ func coreContainerRequest(target domain.Target, label, network, stagedCore, toke
 
 func (r Runner) waitDockerCore(ctx context.Context, target domain.Target, timeout time.Duration) error {
 	if r.CoreFactory == nil {
-		return errors.New("Core Management API client is not configured")
+		return errors.New("core Management API client is not configured")
 	}
 	connection, err := r.credentials(ctx, commandOptions{target: target.Name})
 	if err != nil {
@@ -496,7 +496,7 @@ func listenOnAllInterfaces(value string, fallback int) string {
 
 func (r Runner) dockerCoreStatus(ctx context.Context, target domain.Target, label string) (map[string]any, error) {
 	if r.Docker == nil {
-		return nil, errors.New("Docker runtime is not configured")
+		return nil, errors.New("docker runtime is not configured")
 	}
 	names, err := r.Docker.ListContainers(ctx, label)
 	if err != nil {
@@ -552,10 +552,10 @@ func (r Runner) inspectTargetCore(ctx context.Context, label string) (dockerInsp
 			return dockerInspectContainer{}, false, err
 		}
 		if container.Config.Labels["com.liapoldus.runtime"] != label {
-			return dockerInspectContainer{}, false, errors.New("Core container is not owned by the selected target")
+			return dockerInspectContainer{}, false, errors.New("core container is not owned by the selected target")
 		}
 		if strings.TrimSpace(container.State.Status) == "" || (container.State.Running && container.State.Status != "running") {
-			return dockerInspectContainer{}, false, errors.New("Core container returned invalid status")
+			return dockerInspectContainer{}, false, errors.New("core container returned invalid status")
 		}
 		return container, true, nil
 	}

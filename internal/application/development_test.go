@@ -80,11 +80,11 @@ func TestDevelopmentRecoveryRequiresExplicitRetryAfterFailedOperation(t *testing
 		Recovery: journal, RecoveryTargetKey: "target",
 		Core: recoveryCoreStub{operations: []domain.OperationReference{{ID: "op-1", State: "failed", ErrorCode: "apply_failed"}}},
 	}
-	retrying, err := service.recoverPending(context.Background(), false)
+	_, err := service.recoverPending(context.Background(), false)
 	if err == nil || !strings.Contains(err.Error(), "--retry-failed") || journal.cleared {
 		t.Fatalf("failed operation must pause without clearing its journal: err=%v cleared=%v", err, journal.cleared)
 	}
-	retrying, err = service.recoverPending(context.Background(), true)
+	retrying, err := service.recoverPending(context.Background(), true)
 	if err != nil || !retrying {
 		t.Fatalf("explicit retry should reconcile terminal failed operation: %v", err)
 	}

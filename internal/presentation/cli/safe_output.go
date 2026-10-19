@@ -127,12 +127,12 @@ func safeDockerInspectSummary(body []byte, expectedName string) (dockerInspectSu
 		} `json:"NetworkSettings"`
 	}
 	if err := json.Unmarshal(body, &records); err != nil || len(records) != 1 {
-		return dockerInspectSummary{}, errors.New("Docker inspect returned an invalid response")
+		return dockerInspectSummary{}, errors.New("docker inspect returned an invalid response")
 	}
 	record := records[0]
 	name := strings.TrimPrefix(record.Name, "/")
 	if expectedName == "" || name != expectedName {
-		return dockerInspectSummary{}, errors.New("Docker inspect returned an unexpected container")
+		return dockerInspectSummary{}, errors.New("docker inspect returned an unexpected container")
 	}
 	result := dockerInspectSummary{Name: name, Image: record.Config.Image, State: record.State.Status}
 	if record.State.Health != nil {

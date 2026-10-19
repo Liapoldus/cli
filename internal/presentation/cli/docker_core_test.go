@@ -44,7 +44,7 @@ func TestParseDockerCoreStateRejectsInvalidInspectPayloads(t *testing.T) {
 		`[{"State":{"Status":"exited","Running":true}}]`,
 	} {
 		t.Run(strings.ReplaceAll(payload, " ", ""), func(t *testing.T) {
-			if _, err := parseDockerCoreState([]byte(payload)); err == nil || err.Error() != "Core container returned invalid status" {
+			if _, err := parseDockerCoreState([]byte(payload)); err == nil || err.Error() != "core container returned invalid status" {
 				t.Fatalf("expected safe invalid-status error, got %v", err)
 			}
 		})
