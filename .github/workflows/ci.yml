@@ -144,6 +144,7 @@ jobs:
               "environment": "local",
               "transport": "local-process",
               "runtimeImage": "alpine:latest",
+              "runtimePlatform": "linux/amd64",
               "endpoint": "https://127.0.0.1:18080",
               "caFile": str(tls / "ca.pem"),
               "clientCertFile": str(tls / "client.crt"),
