@@ -694,3 +694,6 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
   Temporary Server 1.1.13 was removed from the CLI registry after restoring the
   approved 1.1.12 Project pin. This is diagnostic evidence on the current Core,
   not acceptance of the pending Core 43b7acc / Server 1.1.14 candidates.
+- Повторный typed lifecycle suite прошёл:
+  `GOWORK=off GOFLAGS=-p=1 go test ./internal/presentation/cli -run
+  'TestServiceSecret(Create|Rotate|Revoke)' -count=1`.
