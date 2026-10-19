@@ -1,5 +1,25 @@
 # CLI — Studio configurator contract and runtime TODO
 
+## Server static resource picker regression — current checkpoint — 2026-10-19
+
+- Live `service resource list server --resource sites --target local` rejected
+  Server's valid manifest because the CLI's bounded resource-kind allowlist
+  omitted `site-release`, a sibling entry in the same manifest. The Admin
+  Surface tables themselves worked; this bug affects the typed configuration
+  resource picker path.
+- CLI now accepts the declared `site-release` kind. The focused regression
+  covers both `sites` and `site-releases` in one manifest. `GOWORK=off
+  GOFLAGS=-p=1 LIAPOLDUS_CORE_OPENAPI="/Users/docup/Projects/Liapoldus Engine/core/contracts/v1/management.openapi.yaml"
+  make check` and `GOWORK=off GOFLAGS=-p=1 make test-race` pass. Source commit
+  `482f2a92e8e4b69dfa42fca7f6127f14362cdbcd` is pushed to `origin/main`.
+- Darwin/arm64 candidate from that exact commit is
+  `/tmp/liapoldus-cli-site-release-kind-482f2a9`, SHA-256
+  `c8aea274638df3e969604a6def84ac1bbd6f5d2b2bc1e1bef6e76fba5edfa1a6`;
+  Go build metadata reports `vcs.modified=false`. The currently installed CLI
+  remains the previously approved digest `1381dd4239795af2b64f9a1878d623eaa0de5c162d2d9895d32f018e010f00dd`.
+  Candidate installation and live confirmation of both resource pickers await
+  exact-digest Studio approval. Production is out of scope.
+
 ## Local secret handoff checkpoint — current — 2026-10-19
 
 - Installed CLI remains the approved Darwin/arm64 build from commit
