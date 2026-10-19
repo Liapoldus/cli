@@ -22,9 +22,10 @@
   Project/CLI output.
 - Core candidate 43b7acc / SHA-256
   `5ccf6e176dd9784b4deccb5c033653646b253f66a716ebf0032b27c9c2ee7af8` and
-  Server 1.1.14 / SHA-256
-  `be991dab5b250461963ef46ad713fdbb3b1f2322915376c0ec0519623998a74e` remain
-  uninstalled pending exact local action approval. This smoke does not claim
+  Server 1.1.14 from clean commit `2102cf9` / SHA-256
+  `c94d2104b766228b683313b533fdc52ffa9bec1b3b8c3edca0e1bd7ae48e5ba4` remain
+  uninstalled pending exact local action approval. The Server build includes
+  the candidate validation fix from `80ffb23`. This smoke does not claim
   candidate-generation acceptance for those binaries; production is out of
   scope.
 - CLI `make check`, `make test-race` and focused
