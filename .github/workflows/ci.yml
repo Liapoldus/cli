@@ -170,12 +170,18 @@ jobs:
           }
           (root / "profile.json").write_text(json.dumps(profile))
           PY
+      - name: Set up an isolated Linux Secret Service
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring
       - name: Run local Core lifecycle smoke test
         run: |
+          dbus-run-session -- bash -euo pipefail <<'BASH'
+          eval "$(printf '%s' 'liapoldus-ci-secret-store' | gnome-keyring-daemon --unlock --components=secrets)"
           export LIAPOLDUS_TARGETS_FILE="$RUNNER_TEMP/liapoldus-smoke/targets.json"
           "$RUNNER_TEMP/liapoldus" target add local --profile "$RUNNER_TEMP/liapoldus-smoke/profile.json"
           trap '"$RUNNER_TEMP/liapoldus" core stop --target local >/dev/null 2>&1 || true' EXIT
           "$RUNNER_TEMP/liapoldus" core start --target local
           "$RUNNER_TEMP/liapoldus" core status --target local
           "$RUNNER_TEMP/liapoldus" target test local
-          "$RUNNER_TEMP/liapoldus" core stop --target local
+          BASH
