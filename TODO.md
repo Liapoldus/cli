@@ -1,49 +1,34 @@
 # CLI — Studio configurator contract and runtime TODO
 
-## Local secret handoff checkpoint — 2026-10-19
+## Local secret handoff checkpoint — current — 2026-10-19
 
-- The installed `/Users/docup/go/bin/liapoldus` is the approved Darwin/arm64
-  build from commit `d0191b8`, SHA-256
-  `1381dd4239795af2b64f9a1878d623eaa0de5c162d2d9895d32f018e010f00dd`; the
-  previous binary is backed up under
-  `/tmp/liapoldus-local-cli-backup-20261019-admission`. Fresh typed `runtime
-  status` reports Core, Echo and Server containers running, and `dev plan` is
-  valid at working-tree digest
-  `sha256:9c1d1ade4026d0ee87827c518d863f37e0ea829fd4638a7eb0ff964d565bffa8`.
-  Core reports Echo/Server at generation 96; Server 1.1.12 is still the running
-  trusted artifact.
-- The Project contains `/echo` and the temporary
-  `/__codex_auth_smoke_20261019` candidate route with one opaque auth reference.
-  Runtime has not applied it: `/echo` returns HTTP 200 and the temporary path
-  returns 404. Typed `service secret list` shows two active and three revoked
-  synthetic references, with no pending registration or rotation. Values
-  remain in the local vault and were not read or logged.
-- Repeated `dev apply --confirm` for this authorized local candidate returned
-  Core HTTP 409 `bundle_apply_failed: service configuration revision conflict`.
-  A fresh `service status server` still reports generation 96, the current
-  Server digest and no pending generation; this attempt did not create a
-  recoverable Core operation. Filtering Server logs to safe outcome tokens
-  found the latest `grantDenied` event at `2026-10-18T23:17:52.423698534Z`,
-  consistent with the apply attempt. The candidate remains saved in Project
-  and must not be reported as active. No raw log line or secret value was
-  emitted. Candidate-generation-scoped Core and Server builds are needed to
-  repeat the grant flow.
-- Latest source is published: SDK `1f68ac6`, Core `aecc186`, Server
-  `80ffb23` (1.1.14), and CLI-owned checkpoint follows below. The Linux/arm64
-  Core candidate digest is
-  `5b8ae79f3ef1098861424ee9d6587d2194b4deeceba6a6ae1d993741fff56391`; Server
-  1.1.14 candidate digest is
-  `be991dab5b250461963ef46ad713fdbb3b1f2322915376c0ec0519623998a74e`.
-  Neither has been installed. Read-only artifact inventory confirms Server
-  1.1.14 is not registered yet; the 1.1.12 rollback artifact remains trusted.
-  The exact-digest local action gate is still required before registration,
-  trust, pin change, or restart.
-- Re-ran the CLI owner gates: `make check` with `GOWORK=off GOFLAGS=-p=1` and
-  `LIAPOLDUS_CORE_OPENAPI` set to the current Core OpenAPI path, plus
-  `make test-race` with `GOWORK=off GOFLAGS=-p=1`; both pass. The remaining
-  live candidate validation, authenticated request, rotation ACK and cleanup
-  remain after the binaries pass the action gate. Preserve `/echo`; production
-  is out of scope.
+- Installed CLI remains the approved Darwin/arm64 build from commit
+  `d0191b8`, SHA-256
+  `1381dd4239795af2b64f9a1878d623eaa0de5c162d2d9895d32f018e010f00dd`.
+  Typed `runtime status` reports Core, Echo and Server running;
+  `service status server` reports Server 1.1.12 ready at generation 99.
+  Read-only `dev plan` is valid at working-tree digest
+  `87b525b36aa9abf77a4b81623ec614dabbe6a97b472b38dee8d1f1b5ecdcdc02`.
+- The live single-replica rotation succeeded using the existing Core and a
+  temporary diagnostic Server 1.1.13. After Studio's security-sensitive apply
+  confirmation, generation 98 was acknowledged and valid Bearer returned 200;
+  missing/invalid Bearer returned 401. The test route was removed, generation
+  99 acknowledged, and `/echo?text=final-check` returned 200 while the
+  temporary path returned 404.
+- Current Project pins Server 1.1.12 and contains only `/echo`. The temporary
+  1.1.13 entry was removed from the local CLI artifact registry. Typed
+  `service secret list` reports 0 active, 7 revoked, 0 pending rotations and
+  0 pending registrations. Secret values were never printed or persisted in
+  Project/CLI output.
+- Core candidate 43b7acc / SHA-256
+  `5ccf6e176dd9784b4deccb5c033653646b253f66a716ebf0032b27c9c2ee7af8` and
+  Server 1.1.14 / SHA-256
+  `be991dab5b250461963ef46ad713fdbb3b1f2322915376c0ec0519623998a74e` remain
+  uninstalled pending exact local action approval. This smoke does not claim
+  candidate-generation acceptance for those binaries; production is out of
+  scope.
+- CLI `make check`, `make test-race` and focused
+  `TestServiceSecret(Create|Rotate|Revoke)` suite pass.
 
 ## Bundle admission blockers and latest local runtime read — superseded — 2026-10-18
 
