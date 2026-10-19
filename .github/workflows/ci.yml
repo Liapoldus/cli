@@ -143,6 +143,7 @@ jobs:
           profile = {
               "environment": "local",
               "transport": "local-process",
+              "runtimeImage": "alpine:latest",
               "endpoint": "https://127.0.0.1:18080",
               "caFile": str(tls / "ca.pem"),
               "clientCertFile": str(tls / "client.crt"),
