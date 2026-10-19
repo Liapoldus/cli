@@ -562,6 +562,17 @@ func TestRetryFailedFlagIsRejectedOutsideDevelopmentApply(t *testing.T) {
 	}
 }
 
+func TestParseOptionsAcceptsDatabaseRestoreInput(t *testing.T) {
+	input := "/tmp/recovery backup/core.sqlite"
+	options, err := parseOptions([]string{"--target", "local", "--input", input})
+	if err != nil {
+		t.Fatalf("parse restore options: %v", err)
+	}
+	if options.target != "local" || options.input != input {
+		t.Fatalf("parsed target/input = %q/%q, want local/%q", options.target, options.input, input)
+	}
+}
+
 func TestObserveTrafficPublishesProjectScopedReport(t *testing.T) {
 	project := t.TempDir()
 	writeRunnerFile(t, project, "project.yaml", "id: demo\n")

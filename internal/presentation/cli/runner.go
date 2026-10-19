@@ -893,7 +893,7 @@ func (r Runner) credentials(ctx context.Context, options commandOptions) (domain
 }
 
 type commandOptions struct {
-	project, revision, target, output, endpoint, idempotencyKey, targets            string
+	project, revision, target, output, input, endpoint, idempotencyKey, targets     string
 	id, version, platform, path, digest, command, controlEndpoint, peerEndpoint     string
 	service, resource, requestFile                                                  string
 	page, section, action, cursor, artifactFile, contentType, metadataFile, ifMatch string
@@ -949,6 +949,8 @@ func parseOptions(args []string) (commandOptions, error) {
 			options.target = value
 		case "--output":
 			options.output = value
+		case "--input":
+			options.input = value
 		case "--request-file":
 			options.requestFile = value
 		case "--endpoint":
