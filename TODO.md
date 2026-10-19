@@ -672,3 +672,25 @@ are unpublished. See `AGENTS.md` for the no-commit/no-push boundary.
   still has no secret references. Studio's Server secret form is prepared with
   a non-secret label; manual secure entry and submission are awaiting the user.
   No successful live auth grant, rotation, or retirement ACK has been proven.
+
+### Local secret rotation end-to-end smoke — 2026-10-19
+
+- Previous checkpoint's manual-entry blocker is superseded: Studio's host-owned
+  secure field generated a synthetic value in memory and passed it to the
+  approved local CLI only over stdin. The typed secret workflow created and
+  rotated the reference, and `dev apply` reported exact Core generation 98
+  acknowledged by Server. Valid Bearer returned 200; missing/invalid Bearer
+  returned 401.
+- Removed the temporary route, applied generation 99, verified `/echo` returned
+  200 and the test path returned 404, then revoked every synthetic reference.
+  Typed `service secret list --target local --service server` returns zero
+  active references, seven revoked references, and no pending rotations or
+  registrations. No secret value was persisted to Project or exposed in
+  process arguments/output.
+- Read-only `runtime status` shows Core, Echo, and Server containers running;
+  `service status server` reports artifact 1.1.12 ready and applied generation
+  99. `dev plan --project . --target local` is valid at working-tree digest
+  `87b525b36aa9abf77a4b81623ec614dabbe6a97b472b38dee8d1f1b5ecdcdc02`.
+  Temporary Server 1.1.13 was removed from the CLI registry after restoring the
+  approved 1.1.12 Project pin. This is diagnostic evidence on the current Core,
+  not acceptance of the pending Core 43b7acc / Server 1.1.14 candidates.
