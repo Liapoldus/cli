@@ -17,10 +17,14 @@ import (
 )
 
 func TestServiceResourceQueryRequiresAnExplicitCoreBackedCatalog(t *testing.T) {
-	manifest := json.RawMessage(`{"id":"server","resources":[{"id":"sites","kind":"site","provider":"service-admin","pageId":"sites","queryResource":"sites","valuePointer":"/siteId","labelPointer":"/domain"}]}`)
+	manifest := json.RawMessage(`{"id":"server","resources":[{"id":"sites","kind":"site","provider":"service-admin","pageId":"sites","queryResource":"sites","valuePointer":"/siteId","labelPointer":"/domain"},{"id":"site-releases","kind":"site-release","provider":"service-admin","pageId":"sites","queryResource":"releases","valuePointer":"/revisionId","labelPointer":"/revisionId"}]}`)
 	query, err := serviceResourceQuery(manifest, "sites")
 	if err != nil || query.pageID != "sites" || query.resourceID != "sites" || query.valuePointer != "/siteId" || query.labelPointer != "/domain" {
 		t.Fatalf("query=%+v error=%v", query, err)
+	}
+	releaseQuery, err := serviceResourceQuery(manifest, "site-releases")
+	if err != nil || releaseQuery.pageID != "sites" || releaseQuery.resourceID != "releases" || releaseQuery.valuePointer != "/revisionId" || releaseQuery.labelPointer != "/revisionId" {
+		t.Fatalf("site-release query=%+v error=%v", releaseQuery, err)
 	}
 	for name, document := range map[string]json.RawMessage{
 		"unknown resource":  json.RawMessage(`{"resources":[]}`),

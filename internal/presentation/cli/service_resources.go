@@ -197,7 +197,7 @@ func safeServiceResourceID(value string) bool {
 
 func safeServiceResourceKind(value string) bool {
 	switch value {
-	case "file", "certificate", "site", "artifact":
+	case "file", "certificate", "site", "site-release", "artifact":
 		return true
 	default:
 		return false
